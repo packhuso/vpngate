@@ -1,0 +1,22 @@
+{
+  "name": "@vpnhub/worker-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BullMQ worker — gateway operations (design Section 12.2)",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@vpnhub/db": "workspace:*",
+    "@vpnhub/gateway-client": "workspace:*",
+    "@vpnhub/provisioning": "workspace:*",
+    "@vpnhub/shared": "workspace:*",
+    "bullmq": "^5.34.6",
+    "ioredis": "^5.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.2"
+  }
+}

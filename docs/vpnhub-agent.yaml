@@ -1,0 +1,477 @@
+openapi: 3.0.3
+info:
+  title: VPN Hub Gateway Agent API
+  description: |
+    Internal API exposed by the agent daemon running on each VPN gateway.
+    Worker servers call this API to provision/manage WireGuard peers.
+
+    ## Authentication
+    All endpoints require BOTH:
+    - **mTLS client certificate** signed by our private CA
+    - **Bearer token** in Authorization header (rotated per gateway)
+
+    Plus the gateway firewall whitelists only the worker's public IP.
+
+    ## Idempotency
+    All write operations support `Idempotency-Key` header.
+    Same key within 24h returns cached result without re-applying.
+
+    ## Network exposure
+    Agent listens on port 9443 on public IP.
+    Cloud firewall + nftables drops everything except whitelisted worker IP.
+
+  version: 1.0.0
+
+servers:
+  - url: https://gw1.vpnhub.example.com:9443/v1
+    description: Gateway 1
+  - url: https://gw2.vpnhub.example.com:9443/v1
+    description: Gateway 2
+
+security:
+  - mTLS: []
+    bearerToken: []
+
+tags:
+  - name: Peers
+    description: WireGuard peer management
+  - name: OpenVPN
+    description: OpenVPN client management (Phase 2)
+  - name: Stats
+    description: Statistics and metrics
+  - name: Health
+    description: Health and version
+
+paths:
+
+  # ─── PEERS (WireGuard) ───────────────────────────────────────────────────
+  /peers:
+    get:
+      tags: [Peers]
+      summary: List all WireGuard peers on this gateway
+      responses:
+        '200':
+          description: Peer list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  interface: { type: string, example: wg0 }
+                  peers:
+                    type: array
+                    items: { $ref: '#/components/schemas/Peer' }
+    post:
+      tags: [Peers]
+      summary: Create new WireGuard peer
+      description: |
+        Adds peer to running WireGuard interface and persists config.
+        Routes for public_ips are added via netlink.
+        FRR will pick up routes and announce via OSPF/BGP.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [peerId, publicKey, privateIp]
+              properties:
+                peerId:
+                  type: string
+                  format: uuid
+                  description: Tunnel ID from control plane
+                publicKey:
+                  type: string
+                  description: Base64-encoded WireGuard public key (32 bytes)
+                  example: NlSqLR7vS8eM3qXY8NaWvE6tZxK2zP4yR3DcF1bGhJ8=
+                presharedKey:
+                  type: string
+                  nullable: true
+                  description: Optional PSK
+                privateIp:
+                  type: string
+                  example: 10.99.0.5
+                  description: Must be in gateway subnet
+                publicIps:
+                  type: array
+                  items: { type: string }
+                  example: ["203.0.113.50", "203.0.113.51"]
+                  description: Public IPs to route through this peer
+      responses:
+        '200':
+          description: Peer created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok], example: ok }
+                  peerId: { type: string, format: uuid }
+                  interface: { type: string, example: wg0 }
+                  appliedAt: { type: string, format: date-time }
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: Peer already exists with different config
+        '500':
+          $ref: '#/components/responses/AgentError'
+
+  /peers/{publicKey}:
+    parameters:
+      - $ref: '#/components/parameters/PublicKey'
+    get:
+      tags: [Peers]
+      summary: Get peer info
+      responses:
+        '200':
+          description: Peer details
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Peer' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Peers]
+      summary: Update peer allowed-ips
+      description: |
+        Used for "move IP" operation. Replaces allowed-ips list completely.
+        Old routes are removed, new routes are added in a single transaction.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [privateIp, publicIps]
+              properties:
+                privateIp:
+                  type: string
+                  description: Must stay the same (validation)
+                publicIps:
+                  type: array
+                  items: { type: string }
+                  description: New complete list of public IPs
+      responses:
+        '200':
+          description: Peer updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  appliedAt: { type: string, format: date-time }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Peers]
+      summary: Remove peer
+      description: |
+        Removes peer from WireGuard interface.
+        Removes all routes associated with peer.
+        FRR will withdraw announcements.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Peer removed (or didn't exist)
+
+  /peers/{publicKey}/suspend:
+    parameters:
+      - $ref: '#/components/parameters/PublicKey'
+    post:
+      tags: [Peers]
+      summary: Suspend peer (keep in DB, block traffic)
+      description: |
+        Sets endpoint to invalid value to prevent connection.
+        Routes are removed temporarily.
+        Use this instead of delete when grace period applies.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Peer suspended
+
+  /peers/{publicKey}/resume:
+    parameters:
+      - $ref: '#/components/parameters/PublicKey'
+    post:
+      tags: [Peers]
+      summary: Resume suspended peer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Peer resumed
+
+  # ─── OPENVPN (Phase 2) ───────────────────────────────────────────────────
+  /openvpn/clients:
+    post:
+      tags: [OpenVPN]
+      summary: Create OpenVPN client
+      description: Phase 2 — not in MVP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [clientId, commonName, privateIp, publicIps]
+              properties:
+                clientId: { type: string, format: uuid }
+                commonName: { type: string }
+                privateIp: { type: string }
+                publicIps:
+                  type: array
+                  items: { type: string }
+      responses:
+        '200':
+          description: Client created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  clientId: { type: string, format: uuid }
+                  clientCert: { type: string, description: PEM cert }
+                  clientKey: { type: string, description: PEM key (sensitive) }
+
+  /openvpn/clients/{commonName}:
+    parameters:
+      - in: path
+        name: commonName
+        required: true
+        schema: { type: string }
+    delete:
+      tags: [OpenVPN]
+      summary: Revoke OpenVPN client (CRL)
+      responses:
+        '204':
+          description: Client revoked
+
+  # ─── STATS ───────────────────────────────────────────────────────────────
+  /stats:
+    get:
+      tags: [Stats]
+      summary: Gateway statistics snapshot
+      description: |
+        Aggregated stats for monitoring.
+        Polled by worker every 30 seconds.
+      responses:
+        '200':
+          description: Stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collectedAt: { type: string, format: date-time }
+                  peerCount: { type: integer }
+                  activePeerCount:
+                    type: integer
+                    description: Peers with handshake in last 3 minutes
+                  totalBytesRx: { type: integer, format: int64 }
+                  totalBytesTx: { type: integer, format: int64 }
+                  cpuUsagePercent: { type: number, format: float }
+                  memoryUsageMb: { type: integer }
+                  systemLoad: { type: number, format: float }
+
+  /stats/peers:
+    get:
+      tags: [Stats]
+      summary: Per-peer bandwidth stats
+      description: |
+        Returns bandwidth counters for each peer.
+        Used for bandwidth_usage aggregation on control plane.
+      responses:
+        '200':
+          description: Per-peer stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  collectedAt: { type: string, format: date-time }
+                  peers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        publicKey: { type: string }
+                        bytesRx: { type: integer, format: int64 }
+                        bytesTx: { type: integer, format: int64 }
+                        lastHandshake: { type: string, format: date-time, nullable: true }
+                        lastEndpoint: { type: string, nullable: true }
+
+  # ─── HEALTH ──────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      security: []
+      responses:
+        '200':
+          description: Agent alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  uptime: { type: integer, description: Seconds since start }
+                  version: { type: string }
+
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      description: |
+        Deep check — WireGuard interface up, FRR running, etc.
+      security: []
+      responses:
+        '200':
+          description: Ready to serve traffic
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ready }
+                  checks:
+                    type: object
+                    properties:
+                      wireguard: { type: string, example: ok }
+                      frr: { type: string, example: ok }
+                      nftables: { type: string, example: ok }
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: degraded }
+                  checks: { type: object }
+
+  /version:
+    get:
+      tags: [Health]
+      summary: Agent version info
+      security: []
+      responses:
+        '200':
+          description: Version
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version: { type: string, example: 1.0.3 }
+                  commit: { type: string }
+                  buildTime: { type: string, format: date-time }
+                  goVersion: { type: string }
+
+# ════════════════════════════════════════════════════════════════════════════
+components:
+
+  securitySchemes:
+    mTLS:
+      type: mutualTLS
+      description: |
+        Client must present cert signed by our private CA.
+        Verified at TLS layer before reaching application.
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: |
+        Per-gateway token, rotated every 30 days.
+        Stored encrypted in vpn_gateways.agent_token column.
+
+  parameters:
+    PublicKey:
+      in: path
+      name: publicKey
+      required: true
+      schema: { type: string }
+      description: URL-encoded WireGuard public key
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      schema: { type: string, maxLength: 255 }
+      description: |
+        Required for write operations.
+        Cached for 24h.
+
+  responses:
+    ValidationError:
+      description: Invalid input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AgentError' }
+    NotFound:
+      description: Peer not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AgentError' }
+    AgentError:
+      description: Internal agent error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/AgentError' }
+
+  schemas:
+
+    AgentError:
+      type: object
+      required: [status, code, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        code:
+          type: string
+          description: Machine-readable error code
+          example: INVALID_PUBLIC_KEY
+        message:
+          type: string
+          description: Human-readable error
+          example: Public key must be 32 bytes base64-encoded
+        details:
+          type: object
+          nullable: true
+
+    Peer:
+      type: object
+      properties:
+        peerId:
+          type: string
+          format: uuid
+          description: Mapped from tunnel.id on control plane
+        publicKey:
+          type: string
+          example: NlSqLR7vS8eM3qXY8NaWvE6tZxK2zP4yR3DcF1bGhJ8=
+        privateIp:
+          type: string
+          example: 10.99.0.5
+        publicIps:
+          type: array
+          items: { type: string }
+          example: ["203.0.113.50", "203.0.113.51"]
+        bytesRx: { type: integer, format: int64 }
+        bytesTx: { type: integer, format: int64 }
+        lastHandshake:
+          type: string
+          format: date-time
+          nullable: true
+        lastEndpoint:
+          type: string
+          nullable: true
+          example: 110.49.85.123:54321
+        status:
+          type: string
+          enum: [active, suspended]
+        createdAt: { type: string, format: date-time }

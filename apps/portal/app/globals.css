@@ -1,0 +1,146 @@
+/* VPN Hub — design system tokens (Light theme, Linear/Vercel-inspired).
+ * Cool grays + blue accent. Soft contrast for long sessions. */
+@import "tailwindcss";
+
+@theme {
+  --color-bg:           #f8fafc;
+  --color-surface:      #ffffff;
+  --color-surface-2:    #f1f5f9;
+  --color-border:       #e2e8f0;
+  --color-border-2:     #cbd5e1;
+  --color-text:         #0f172a;
+  --color-text-muted:   #64748b;
+  --color-text-subtle:  #94a3b8;
+
+  --color-primary:      #2563eb;
+  --color-primary-hover:#1d4ed8;
+  --color-primary-soft: #dbeafe;
+  --color-success:      #16a34a;
+  --color-success-soft: #dcfce7;
+  --color-warning:      #d97706;
+  --color-warning-soft: #fef3c7;
+  --color-danger:       #dc2626;
+  --color-danger-soft:  #fee2e2;
+  --color-info:         #0891b2;
+  --color-info-soft:    #cffafe;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+               "Roboto", "Helvetica Neue", Arial, "Apple Color Emoji",
+               "Segoe UI Emoji", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono",
+               monospace;
+}
+
+html {
+  /* Always reserve scrollbar space so switching between short/tall pages
+   * doesn't shift the whole layout (sidebar + icons "เด้ง"). */
+  scrollbar-gutter: stable;
+  overflow-y: scroll;
+}
+html, body {
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── design-system component classes (plain CSS so we can re-use freely) ─ */
+.card {
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  padding: 20px;
+}
+.card-compact { border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface); padding: 16px; }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border-radius: 8px; padding: 8px 16px; font-size: 14px; font-weight: 500;
+  transition: background-color .12s, color .12s, border-color .12s;
+  cursor: pointer; border: 1px solid transparent;
+}
+.btn:disabled { cursor: not-allowed; opacity: .5; }
+.btn-primary           { background: var(--color-primary); color: #fff; }
+.btn-primary:hover     { background: var(--color-primary-hover); }
+.btn-secondary         { background: var(--color-surface); color: var(--color-text); border-color: var(--color-border-2); }
+.btn-secondary:hover   { background: var(--color-surface-2); }
+.btn-ghost             { background: transparent; color: var(--color-text-muted); }
+.btn-ghost:hover       { background: var(--color-surface-2); color: var(--color-text); }
+.btn-danger            { background: var(--color-danger); color: #fff; }
+.btn-danger:hover      { background: #b91c1c; }
+.btn-danger-outline    { background: transparent; color: var(--color-danger); border-color: color-mix(in srgb, var(--color-danger) 40%, transparent); }
+.btn-danger-outline:hover { background: var(--color-danger-soft); }
+.btn-sm                { padding: 6px 12px; font-size: 12px; }
+
+.input {
+  width: 100%; border-radius: 8px;
+  border: 1px solid var(--color-border-2); background: var(--color-surface);
+  padding: 8px 12px; font-size: 14px; color: var(--color-text);
+  transition: border-color .12s, box-shadow .12s;
+  box-sizing: border-box;
+}
+.input::placeholder { color: var(--color-text-subtle); }
+.input:focus {
+  outline: none; border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 18%, transparent);
+}
+
+.label { display: block; font-size: 12px; font-weight: 500; color: var(--color-text-muted); margin-bottom: 6px; }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 500;
+  line-height: 1.5;
+}
+.badge-success { background: var(--color-success-soft); color: var(--color-success); }
+.badge-warning { background: var(--color-warning-soft); color: var(--color-warning); }
+.badge-danger  { background: var(--color-danger-soft);  color: var(--color-danger); }
+.badge-info    { background: var(--color-info-soft);    color: var(--color-info); }
+.badge-neutral { background: var(--color-surface-2);    color: var(--color-text-muted); }
+.badge-primary { background: var(--color-primary-soft); color: var(--color-primary); }
+
+.table-default { width: 100%; font-size: 14px; border-collapse: collapse; }
+.table-default thead tr { text-align: left; font-size: 11px; font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.table-default th, .table-default td { padding: 10px 12px; }
+.table-default tbody tr { border-top: 1px solid var(--color-border); }
+.table-default tbody tr:hover { background: var(--color-surface-2); }
+
+.mono { font-family: var(--font-mono); }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  border-radius: 8px; padding: 0 10px; height: 36px;
+  font-size: 13.5px;
+  font-weight: 500;            /* same weight in every state → no reflow */
+  color: var(--color-text-muted); text-decoration: none;
+  transition: background-color .12s, color .12s;
+}
+.nav-item > svg {
+  flex-shrink: 0;
+  display: block;          /* avoid inline-SVG baseline shift */
+  width: 16px; height: 16px;  /* lock size so it can't resize on hydrate */
+  color: var(--color-text-subtle);
+  transition: color .12s;
+}
+.nav-item:hover { background: var(--color-surface-2); color: var(--color-text); }
+.nav-item:hover > svg { color: var(--color-text); }
+.nav-item-active {
+  background: var(--color-primary-soft); color: var(--color-primary);
+  /* keep weight 500 — bumping to 600 shifts the row ("เด้ง") */
+}
+.nav-item-active > svg { color: var(--color-primary); }
+.nav-item-active:hover { background: var(--color-primary-soft); color: var(--color-primary); }
+.nav-item-active:hover > svg { color: var(--color-primary); }
+
+.nav-section-label {
+  font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .06em;
+  color: var(--color-text-subtle);
+  padding: 4px 10px;
+  margin-top: 6px;
+}
+
+.page-title    { font-size: 24px; font-weight: 600; letter-spacing: -0.025em; color: var(--color-text); margin: 0; }
+.page-subtitle { font-size: 14px; color: var(--color-text-muted); margin-top: 4px; }
+.section-title { font-size: 16px; font-weight: 600; color: var(--color-text); margin: 0; }

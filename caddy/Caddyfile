@@ -1,0 +1,33 @@
+# VPN Hub — Caddy reverse proxy (design Section 3.1 / 12.1)
+#
+# MVP state: no public domain yet → serve internal :80 only.
+# Cloudflare sits in front of Caddy in production (design Section 3.1).
+#
+# When DNS is ready, replace the :80 block below with:
+#
+#   {$CADDY_DOMAIN} {
+#       tls {$CADDY_EMAIL}
+#       encode zstd gzip
+#       # Customer portal + admin (Next.js — added in later phase)
+#       reverse_proxy portal:3000
+#       # API (NestJS — added in later phase)
+#       handle_path /api/* {
+#           reverse_proxy api:3001
+#       }
+#   }
+#
+# Observability (Grafana) is intentionally NOT exposed via Caddy in MVP —
+# it binds to 127.0.0.1 only. Use an SSH tunnel to reach it.
+
+{
+	admin off
+}
+
+:80 {
+	encode zstd gzip
+
+	respond /healthz "VPN Hub edge: OK" 200
+
+	# Placeholder until portal/api services exist
+	respond "VPN Hub — service provisioning in progress" 200
+}

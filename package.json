@@ -1,0 +1,17 @@
+{
+  "name": "vpn-hub",
+  "private": true,
+  "version": "0.1.0",
+  "description": "VPN Hub — CGNAT-bypass VPN service (monorepo, design Section 12.2)",
+  "packageManager": "pnpm@11.1.3",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "db:pull": "pnpm --filter @vpnhub/db pull",
+    "db:studio": "pnpm --filter @vpnhub/db studio",
+    "api:dev": "pnpm --filter @vpnhub/api start:dev",
+    "portal:dev": "pnpm --filter @vpnhub/portal dev",
+    "build": "pnpm -r build"
+  }
+}

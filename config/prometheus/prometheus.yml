@@ -1,0 +1,16 @@
+# VPN Hub — Prometheus (design Section 12.1, 90-day retention per Section 4.3)
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    monitor: vpnhub
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Future targets (added when services land):
+  #  - job_name: api        # NestJS /metrics
+  #  - job_name: worker     # BullMQ worker /metrics
+  #  - job_name: node       # node_exporter

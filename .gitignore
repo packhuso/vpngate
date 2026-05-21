@@ -1,0 +1,18 @@
+# Secrets — never commit (design Section 6.5 / README security reminder)
+.env
+*.env.local
+
+# Runtime
+*.log
+
+# Node / monorepo
+node_modules/
+dist/
+build/
+.next/
+.turbo/
+*.tsbuildinfo
+coverage/
+
+# Claude Code local settings (machine-local; may capture secrets in permission rules)
+.claude/settings.local.json

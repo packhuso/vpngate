@@ -1,0 +1,31 @@
+[Unit]
+Description=VPN Hub Gateway Agent
+Documentation=https://github.com/vpnhub (docs/vpnhub-agent.yaml)
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+Requires=wg-quick@wg0.service
+
+[Service]
+Type=simple
+# Root: wgctrl ConfigureDevice + netlink route need CAP_NET_ADMIN.
+User=root
+EnvironmentFile=/etc/vpnhub-agent/agent.env
+ExecStart=/usr/local/bin/vpnhub-agent
+Restart=on-failure
+RestartSec=3
+# health probe (design 11.2: auto-restart on crash)
+WatchdogSec=0
+
+# Hardening (kept compatible with netlink/wireguard control)
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelLogs=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/vpnhub-agent
+
+[Install]
+WantedBy=multi-user.target

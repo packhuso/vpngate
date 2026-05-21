@@ -1,0 +1,19 @@
+[Unit]
+Description=VPN Hub Internal Worker (billing + drift detection)
+After=network-online.target docker.service vpnhub-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=packhuso
+Group=packhuso
+WorkingDirectory=/opt/vpnhub-app/apps/worker-internal
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/vpnhub-app/.env
+ExecStart=/usr/bin/node /opt/vpnhub-app/apps/worker-internal/dist/main.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

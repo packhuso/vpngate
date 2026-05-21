@@ -1,0 +1,15 @@
+[Unit]
+Description=cloudflared tunnel (vpnhub-dev → portal.myip.in.th)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=packhuso
+Group=packhuso
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate --config /home/packhuso/.cloudflared/config.yml tunnel run vpnhub-dev
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

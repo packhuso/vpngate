@@ -1,0 +1,22 @@
+[Unit]
+Description=VPN Hub Portal (Next.js 15)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=packhuso
+Group=packhuso
+WorkingDirectory=/opt/vpnhub-app/apps/portal
+Environment=NODE_ENV=production
+# Google OAuth / Redis / DB / APP_SECRET_KEY for auth routes (design §6.2)
+EnvironmentFile=/opt/vpnhub-app/.env
+# Bound to 0.0.0.0 — reachable on the LAN IP (UFW opens 3080/tcp).
+# Dev/LAN only: placeholder page, no TLS/auth. Production serves via Caddy.
+ExecStart=/usr/bin/node /opt/vpnhub-app/apps/portal/node_modules/next/dist/bin/next start -p 3080 -H 0.0.0.0
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

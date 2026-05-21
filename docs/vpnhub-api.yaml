@@ -1,0 +1,1123 @@
+openapi: 3.0.3
+info:
+  title: VPN Hub API
+  description: |
+    Backend API for VPN Hub — VPN tunnel service that provides public IP routing
+    for home server / self-hosted use cases.
+
+    ## Authentication
+    - **Customer endpoints**: Session cookie set via Google OAuth flow
+    - **Admin endpoints**: Same session but requires admin role
+    - All write operations support `Idempotency-Key` header to prevent duplicates
+
+    ## Money representation
+    All monetary values are in **satang** (1/100 baht) as integers to avoid floating point errors.
+    Example: `10000` = 100.00 baht
+
+    ## Rate limiting
+    - Default: 100 requests/min per user
+    - Code redemption: 5 attempts/min per user, 20/min per IP
+    - Sensitive operations (admin adjust credit, IP allocation): 10/min
+
+  version: 1.0.0
+  contact:
+    name: VPN Hub Engineering
+    email: dev@vpnhub.example.com
+
+servers:
+  - url: https://api.vpnhub.example.com/v1
+    description: Production
+  - url: https://staging-api.vpnhub.example.com/v1
+    description: Staging
+
+tags:
+  - name: Auth
+    description: Authentication and session management
+  - name: Wallet
+    description: Credit balance and transaction history
+  - name: Codes
+    description: Credit code redemption
+  - name: Tunnels
+    description: VPN tunnel management
+  - name: Public IPs
+    description: Public IP allocation and management
+  - name: Notifications
+    description: User notifications
+  - name: Admin Users
+    description: Admin user management
+  - name: Admin Codes
+    description: Admin code batch management
+  - name: Admin IP Pool
+    description: Admin IP pool management
+  - name: Admin Gateways
+    description: Admin gateway monitoring
+
+security:
+  - sessionCookie: []
+
+paths:
+
+  # ─── AUTH ────────────────────────────────────────────────────────────────
+  /auth/google/login:
+    get:
+      tags: [Auth]
+      summary: Start Google OAuth flow
+      security: []
+      responses:
+        '302':
+          description: Redirect to Google consent screen
+
+  /auth/google/callback:
+    get:
+      tags: [Auth]
+      summary: OAuth callback
+      security: []
+      parameters:
+        - in: query
+          name: code
+          required: true
+          schema: { type: string }
+        - in: query
+          name: state
+          required: true
+          schema: { type: string }
+      responses:
+        '302':
+          description: Redirect to portal after session created
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout and revoke session
+      responses:
+        '204':
+          description: Session revoked
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Get current user
+      responses:
+        '200':
+          description: Current user info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ─── WALLET ──────────────────────────────────────────────────────────────
+  /wallet:
+    get:
+      tags: [Wallet]
+      summary: Get wallet balance and stats
+      responses:
+        '200':
+          description: Wallet info
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Wallet'
+
+  /wallet/transactions:
+    get:
+      tags: [Wallet]
+      summary: List credit transactions
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [code_redemption, payment_topup, subscription_charge, ip_charge, refund, reversal, admin_adjustment]
+      responses:
+        '200':
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedTransactions'
+
+  # ─── CODE REDEMPTION ─────────────────────────────────────────────────────
+  /codes/redeem:
+    post:
+      tags: [Codes]
+      summary: Redeem a credit code
+      description: |
+        Atomic operation that adds credit to wallet.
+        Rate limited: 5/min per user, 20/min per IP.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                  example: XK7M-PQ23-9LFV
+                  description: Code (dashes/case optional, normalized server-side)
+      responses:
+        '200':
+          description: Redemption successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  creditAddedSatang: { type: integer, example: 50000 }
+                  newBalanceSatang: { type: integer, example: 125000 }
+                  redemptionId: { type: string, format: uuid }
+        '400':
+          description: Invalid code format
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Code invalid or exhausted (generic message to prevent enumeration)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Per-user limit exceeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  # ─── TUNNELS ─────────────────────────────────────────────────────────────
+  /tunnels:
+    get:
+      tags: [Tunnels]
+      summary: List user's tunnels
+      responses:
+        '200':
+          description: Tunnel list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Tunnel' }
+    post:
+      tags: [Tunnels]
+      summary: Create new tunnel
+      description: |
+        Synchronously deducts credit, allocates private IP, generates keypair.
+        Then enqueues async job to provision on gateway.
+        Returns immediately with status=provisioning.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, protocol, speedTier]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 100
+                  example: บ้าน
+                protocol:
+                  type: string
+                  enum: [wireguard, openvpn]
+                speedTier:
+                  type: string
+                  enum: [tier_100mb, tier_500mb, tier_1gb]
+                gatewayLocation:
+                  type: string
+                  example: TH-BKK-1
+                  nullable: true
+      responses:
+        '202':
+          description: Tunnel created, provisioning in progress
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tunnel' }
+        '402':
+          description: Insufficient credit
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: No gateway available
+
+  /tunnels/{tunnelId}:
+    parameters:
+      - $ref: '#/components/parameters/TunnelId'
+    get:
+      tags: [Tunnels]
+      summary: Get tunnel details
+      responses:
+        '200':
+          description: Tunnel details
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TunnelDetail' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Tunnels]
+      summary: Update tunnel (rename only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+      responses:
+        '200':
+          description: Tunnel updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tunnel' }
+    delete:
+      tags: [Tunnels]
+      summary: Delete tunnel
+      description: |
+        Soft delete. Public IPs are detached (not released).
+        Async removal from gateway. No refund.
+      responses:
+        '204':
+          description: Tunnel deleted
+
+  /tunnels/{tunnelId}/config:
+    parameters:
+      - $ref: '#/components/parameters/TunnelId'
+    get:
+      tags: [Tunnels]
+      summary: Download tunnel config file
+      parameters:
+        - in: query
+          name: format
+          schema:
+            type: string
+            enum: [conf, qrcode]
+            default: conf
+      responses:
+        '200':
+          description: Config file (text) or QR code (PNG)
+          content:
+            text/plain: {}
+            image/png: {}
+
+  /tunnels/{tunnelId}/regenerate-keys:
+    parameters:
+      - $ref: '#/components/parameters/TunnelId'
+    post:
+      tags: [Tunnels]
+      summary: Regenerate WireGuard keypair
+      description: Old config will stop working. Async update on gateway.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Regeneration in progress
+
+  # ─── PUBLIC IPs ──────────────────────────────────────────────────────────
+  /ips:
+    get:
+      tags: [Public IPs]
+      summary: List user's Public IPs
+      responses:
+        '200':
+          description: IP list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ips:
+                    type: array
+                    items: { $ref: '#/components/schemas/PublicIp' }
+    post:
+      tags: [Public IPs]
+      summary: Buy new Public IP
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity:
+                  type: integer
+                  enum: [1, 8, 16, 32, 64, 128, 256]
+                  description: 1 = single IP, 8+ = block
+                tunnelId:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: Optional — attach to tunnel immediately
+      responses:
+        '201':
+          description: IP allocated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ips:
+                    type: array
+                    items: { $ref: '#/components/schemas/PublicIp' }
+        '402':
+          description: Insufficient credit
+        '503':
+          description: No IP available in pool
+
+  /ips/{ipId}:
+    parameters:
+      - $ref: '#/components/parameters/IpId'
+    get:
+      tags: [Public IPs]
+      summary: Get IP details
+      responses:
+        '200':
+          description: IP details
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicIp' }
+    delete:
+      tags: [Public IPs]
+      summary: Release IP (back to pool)
+      description: Permanent. No refund.
+      responses:
+        '204':
+          description: IP released
+
+  /ips/{ipId}/move:
+    parameters:
+      - $ref: '#/components/parameters/IpId'
+    post:
+      tags: [Public IPs]
+      summary: Move IP to different tunnel
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tunnelId]
+              properties:
+                tunnelId:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: null = detach without re-attach
+      responses:
+        '200':
+          description: IP move job enqueued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicIp' }
+
+  /ips/{ipId}/reverse-dns:
+    parameters:
+      - $ref: '#/components/parameters/IpId'
+    patch:
+      tags: [Public IPs]
+      summary: Set/update/remove reverse DNS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hostname:
+                  type: string
+                  nullable: true
+                  example: home.example.com
+                  description: null to remove rDNS
+      responses:
+        '200':
+          description: rDNS update enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [pending, active, none, failed] }
+        '400':
+          description: Invalid hostname format
+
+  # ─── NOTIFICATIONS ───────────────────────────────────────────────────────
+  /notifications:
+    get:
+      tags: [Notifications]
+      summary: List notifications
+      parameters:
+        - in: query
+          name: unread
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Notification list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  unreadCount: { type: integer }
+
+  /notifications/{notificationId}/read:
+    post:
+      tags: [Notifications]
+      summary: Mark notification as read
+      parameters:
+        - in: path
+          name: notificationId
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Marked as read
+
+  /notifications/read-all:
+    post:
+      tags: [Notifications]
+      summary: Mark all as read
+      responses:
+        '204':
+          description: All marked as read
+
+  # ─── ADMIN: USERS ────────────────────────────────────────────────────────
+  /admin/users:
+    get:
+      tags: [Admin Users]
+      summary: List users (admin)
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string, description: Search by email or name }
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [active, suspended, deleted]
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/UserAdminView' }
+
+  /admin/users/{userId}:
+    parameters:
+      - in: path
+        name: userId
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Admin Users]
+      summary: User detail (admin)
+      responses:
+        '200':
+          description: Full user info
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserAdminDetail' }
+
+  /admin/users/{userId}/adjust-credit:
+    parameters:
+      - in: path
+        name: userId
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Admin Users]
+      summary: Adjust user credit balance
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amountSatang, category, reason]
+              properties:
+                amountSatang:
+                  type: integer
+                  description: Positive = add, negative = deduct
+                  example: 50000
+                category:
+                  type: string
+                  enum: [refund, compensation, manual_topup, promotional, correction, other]
+                reason:
+                  type: string
+                  minLength: 5
+                  maxLength: 500
+      responses:
+        '200':
+          description: Credit adjusted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  newBalanceSatang: { type: integer }
+                  transactionId: { type: string, format: uuid }
+
+  /admin/users/{userId}/suspend:
+    parameters:
+      - in: path
+        name: userId
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Admin Users]
+      summary: Suspend user account
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '204':
+          description: User suspended
+
+  # ─── ADMIN: CODES ────────────────────────────────────────────────────────
+  /admin/code-batches:
+    get:
+      tags: [Admin Codes]
+      summary: List code batches
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [active, paused, revoked]
+      responses:
+        '200':
+          description: Batch list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/CodeBatch' }
+    post:
+      tags: [Admin Codes]
+      summary: Create code batch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, creditValueSatang, codeCount, maxUsesTotal, maxUsesPerUser]
+              properties:
+                name: { type: string, maxLength: 255 }
+                notes: { type: string, nullable: true }
+                creditValueSatang: { type: integer, minimum: 1 }
+                codeCount:
+                  type: integer
+                  minimum: 1
+                  maximum: 10000
+                  description: 1 = single, >1 = bulk auto-generated
+                customCode:
+                  type: string
+                  nullable: true
+                  description: Only when codeCount=1
+                maxUsesTotal:
+                  type: integer
+                  minimum: 0
+                  description: 0 = unlimited
+                maxUsesPerUser:
+                  type: integer
+                  minimum: 0
+                  description: 0 = unlimited
+                expiresAt:
+                  type: string
+                  format: date-time
+                  nullable: true
+      responses:
+        '201':
+          description: Batch created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch: { $ref: '#/components/schemas/CodeBatch' }
+                  codes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, format: uuid }
+                        code: { type: string }
+
+  /admin/code-batches/{batchId}:
+    parameters:
+      - in: path
+        name: batchId
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Admin Codes]
+      summary: Batch detail
+      responses:
+        '200':
+          description: Batch with codes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CodeBatchDetail' }
+
+  /admin/code-batches/{batchId}/revoke:
+    parameters:
+      - in: path
+        name: batchId
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Admin Codes]
+      summary: Revoke entire batch
+      responses:
+        '204':
+          description: All codes in batch revoked
+
+  /admin/code-batches/{batchId}/export:
+    parameters:
+      - in: path
+        name: batchId
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Admin Codes]
+      summary: Export codes as CSV
+      responses:
+        '200':
+          description: CSV file
+          content:
+            text/csv: {}
+
+  # ─── ADMIN: IP POOL ──────────────────────────────────────────────────────
+  /admin/ip-pool:
+    get:
+      tags: [Admin IP Pool]
+      summary: List IP pool blocks
+      responses:
+        '200':
+          description: Pool list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pools:
+                    type: array
+                    items: { $ref: '#/components/schemas/IpPoolBlock' }
+                  totals:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      allocated: { type: integer }
+                      available: { type: integer }
+                      blacklisted: { type: integer }
+    post:
+      tags: [Admin IP Pool]
+      summary: Add new IP block to pool
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [block]
+              properties:
+                block:
+                  type: string
+                  example: 203.0.113.0/24
+                asn: { type: string, nullable: true }
+                upstreamProvider: { type: string, nullable: true }
+                notes: { type: string, nullable: true }
+      responses:
+        '201':
+          description: Block added
+
+  /admin/ip-pool/{poolId}/ips:
+    parameters:
+      - in: path
+        name: poolId
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Admin IP Pool]
+      summary: List individual IPs in block
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [available, allocated, suspended, reserved, blacklisted]
+      responses:
+        '200':
+          description: IP list with ownership info
+
+  /admin/ips/{ipAddress}/blacklist:
+    parameters:
+      - in: path
+        name: ipAddress
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Admin IP Pool]
+      summary: Mark IP as blacklisted
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '204':
+          description: IP blacklisted (won't be allocated)
+
+  /admin/ips/{ipAddress}/unblacklist:
+    parameters:
+      - in: path
+        name: ipAddress
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Admin IP Pool]
+      summary: Remove IP from blacklist
+      responses:
+        '204':
+          description: IP returned to available pool
+
+  # ─── ADMIN: GATEWAYS ─────────────────────────────────────────────────────
+  /admin/gateways:
+    get:
+      tags: [Admin Gateways]
+      summary: List VPN gateways
+      responses:
+        '200':
+          description: Gateway list with health
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gateways:
+                    type: array
+                    items: { $ref: '#/components/schemas/Gateway' }
+
+  /admin/gateways/{gatewayId}:
+    parameters:
+      - in: path
+        name: gatewayId
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Admin Gateways]
+      summary: Update gateway settings (status, max_tunnels, etc.)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [active, draining, maintenance, offline]
+                maxTunnels: { type: integer }
+      responses:
+        '200':
+          description: Gateway updated
+
+# ════════════════════════════════════════════════════════════════════════════
+components:
+
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: session
+
+  parameters:
+    Limit:
+      in: query
+      name: limit
+      schema: { type: integer, default: 50, maximum: 200 }
+    Cursor:
+      in: query
+      name: cursor
+      schema: { type: string, description: Cursor for pagination }
+    TunnelId:
+      in: path
+      name: tunnelId
+      required: true
+      schema: { type: string, format: uuid }
+    IpId:
+      in: path
+      name: ipId
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      schema: { type: string, maxLength: 255 }
+      description: |
+        Client-generated unique key (e.g. UUID v4).
+        Same key within 24h returns cached result.
+
+  responses:
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: INVALID_CODE
+        message:
+          type: string
+          example: Code นี้ไม่สามารถใช้งานได้
+        details:
+          type: object
+          nullable: true
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        avatarUrl: { type: string, nullable: true }
+        status: { type: string, enum: [active, suspended, deleted] }
+        createdAt: { type: string, format: date-time }
+
+    Wallet:
+      type: object
+      properties:
+        balanceSatang: { type: integer, example: 125000 }
+        lifetimeTopupSatang: { type: integer }
+        lifetimeSpentSatang: { type: integer }
+        estimatedDepletionDate: { type: string, format: date, nullable: true }
+        monthlyBurnRateSatang: { type: integer }
+
+    CreditTransaction:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type:
+          type: string
+          enum: [code_redemption, payment_topup, subscription_charge, ip_charge, refund, reversal, admin_adjustment]
+        amountSatang: { type: integer, description: Negative for charges }
+        balanceAfterSatang: { type: integer }
+        description: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    PaginatedTransactions:
+      type: object
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/CreditTransaction' }
+        nextCursor:
+          type: string
+          nullable: true
+
+    Tunnel:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        protocol: { type: string, enum: [wireguard, openvpn] }
+        speedTier: { type: string, enum: [tier_100mb, tier_500mb, tier_1gb] }
+        status: { type: string, enum: [provisioning, active, suspended, failed, deleted] }
+        privateIp: { type: string }
+        publicIpCount: { type: integer }
+        gatewayLocation: { type: string }
+        nextBillingAt: { type: string, format: date-time }
+        suspendedAt: { type: string, format: date-time, nullable: true }
+        lastHandshakeAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    TunnelDetail:
+      allOf:
+        - $ref: '#/components/schemas/Tunnel'
+        - type: object
+          properties:
+            wgPublicKey: { type: string }
+            wgEndpoint: { type: string, example: th-bkk-1.vpnhub.com:51820 }
+            bytesRx: { type: integer, format: int64 }
+            bytesTx: { type: integer, format: int64 }
+            publicIps:
+              type: array
+              items: { $ref: '#/components/schemas/PublicIp' }
+
+    PublicIp:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        ipAddress: { type: string, example: 203.0.113.50 }
+        tunnelId: { type: string, format: uuid, nullable: true }
+        blockId: { type: string, format: uuid, nullable: true }
+        reverseDns: { type: string, nullable: true }
+        reverseDnsStatus: { type: string, enum: [none, pending, active, failed] }
+        reputationStatus: { type: string, enum: [clean, listed, unknown], nullable: true }
+        status: { type: string, enum: [available, allocated, suspended, reserved, blacklisted] }
+        nextBillingAt: { type: string, format: date-time, nullable: true }
+        suspendedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    Notification:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, example: tunnel.suspended }
+        severity: { type: string, enum: [info, warning, danger] }
+        title: { type: string }
+        body: { type: string, nullable: true }
+        metadata: { type: object, nullable: true }
+        readAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    # ─── Admin schemas ───────────────────────────────────────────────────
+    UserAdminView:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        name: { type: string, nullable: true }
+        status: { type: string }
+        balanceSatang: { type: integer }
+        tunnelCount: { type: integer }
+        ipCount: { type: integer }
+        lifetimeSpentSatang: { type: integer }
+        createdAt: { type: string, format: date-time }
+        lastLoginAt: { type: string, format: date-time, nullable: true }
+
+    UserAdminDetail:
+      allOf:
+        - $ref: '#/components/schemas/UserAdminView'
+        - type: object
+          properties:
+            phone: { type: string, nullable: true }
+            taxId: { type: string, nullable: true }
+            companyName: { type: string, nullable: true }
+            recentTransactions:
+              type: array
+              items: { $ref: '#/components/schemas/CreditTransaction' }
+            tunnels:
+              type: array
+              items: { $ref: '#/components/schemas/Tunnel' }
+
+    CodeBatch:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        notes: { type: string, nullable: true }
+        creditValueSatang: { type: integer }
+        codeCount: { type: integer }
+        redeemedCount: { type: integer }
+        maxUsesTotal: { type: integer }
+        maxUsesPerUser: { type: integer }
+        expiresAt: { type: string, format: date-time, nullable: true }
+        status: { type: string, enum: [active, paused, revoked] }
+        totalCreditRedeemedSatang: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    CodeBatchDetail:
+      allOf:
+        - $ref: '#/components/schemas/CodeBatch'
+        - type: object
+          properties:
+            codes:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  code: { type: string }
+                  currentUses: { type: integer }
+                  status: { type: string }
+
+    IpPoolBlock:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        block: { type: string, example: 203.0.113.0/24 }
+        blockSize: { type: integer, example: 256 }
+        asn: { type: string, nullable: true }
+        upstreamProvider: { type: string, nullable: true }
+        availableCount: { type: integer }
+        allocatedCount: { type: integer }
+        addedAt: { type: string, format: date-time }
+
+    Gateway:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        hostname: { type: string }
+        location: { type: string }
+        wgEndpoint: { type: string }
+        currentTunnels: { type: integer }
+        maxTunnels: { type: integer }
+        status: { type: string, enum: [active, draining, maintenance, offline] }
+        lastHealthCheck: { type: string, format: date-time }
+        healthStatus: { type: string, nullable: true }
