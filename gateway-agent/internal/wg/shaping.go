@@ -90,23 +90,27 @@ func (k *KernelManager) addPeerShaping(classid uint16, kbit int, privateIP strin
 }
 
 // addShapingFilters adds dst (wg0) + src (ifb0) u32 filters for each IP → class.
+// Each peer's filters use a unique prio (= classid) so removePeerShaping can
+// delete them by prio. u32 filters live on the ROOT qdisc, NOT the class, so
+// deleting the class does NOT drop them — without a prio-scoped delete they leak
+// and a later reassignment of the same IP would match a stale filter first.
 func (k *KernelManager) addShapingFilters(classid uint16, ips []string) {
 	if !k.shaping || classid == 0 {
 		return
 	}
 	cid := fmt.Sprintf("1:%d", classid)
+	prio := fmt.Sprintf("%d", classid)
 	for _, ip := range ips {
 		h := host32(ip)
 		runOK("tc", "filter", "add", "dev", k.iface, "parent", "1:", "protocol", "ip",
-			"prio", "1", "u32", "match", "ip", "dst", h, "flowid", cid)
+			"prio", prio, "u32", "match", "ip", "dst", h, "flowid", cid)
 		runOK("tc", "filter", "add", "dev", ifbDev, "parent", "1:", "protocol", "ip",
-			"prio", "1", "u32", "match", "ip", "src", h, "flowid", cid)
+			"prio", prio, "u32", "match", "ip", "src", h, "flowid", cid)
 	}
 }
 
 // updatePeerShaping re-applies rate + filters when a peer's IPs or tier change.
-// Simplest correct approach: tear down the class (which drops its filters) and
-// rebuild. tc has no clean per-filter delete by match, so rebuild is safest.
+// Tear down the class + its prio-scoped filters, then rebuild.
 func (k *KernelManager) updatePeerShaping(classid uint16, kbit int, privateIP string, publicIPs []string) {
 	if !k.shaping || classid == 0 {
 		return
@@ -115,14 +119,18 @@ func (k *KernelManager) updatePeerShaping(classid uint16, kbit int, privateIP st
 	k.addPeerShaping(classid, kbit, privateIP, publicIPs)
 }
 
-// removePeerShaping deletes the peer's HTB classes on both interfaces. Deleting
-// a class also removes its attached filters and leaf qdisc.
+// removePeerShaping deletes the peer's u32 filters (by prio = classid), leaf
+// qdisc, and HTB class on both interfaces. The filters MUST be deleted by prio:
+// they hang off the root qdisc, so `class del` alone leaves them dangling.
 func (k *KernelManager) removePeerShaping(classid uint16) {
 	if classid == 0 {
 		return
 	}
 	cid := fmt.Sprintf("1:%d", classid)
-	// remove filters first (best-effort), then leaf qdisc, then class
+	prio := fmt.Sprintf("%d", classid)
+	// filters first (root-attached, by prio), then leaf qdisc, then class
+	runOK("tc", "filter", "del", "dev", k.iface, "parent", "1:", "prio", prio)
+	runOK("tc", "filter", "del", "dev", ifbDev, "parent", "1:", "prio", prio)
 	runOK("tc", "qdisc", "del", "dev", k.iface, "parent", cid)
 	runOK("tc", "qdisc", "del", "dev", ifbDev, "parent", cid)
 	runOK("tc", "class", "del", "dev", k.iface, "classid", cid)
@@ -187,12 +195,13 @@ func addShapingOn(iface string, classid uint16, kbit int, privateIP string, publ
 	runOK("tc", "qdisc", "add", "dev", iface, "parent", cid, "handle", handle, "fq_codel")
 	runOK("tc", "class", "add", "dev", ifbDev, "parent", "1:1", "classid", cid, "htb", "rate", rate, "ceil", rate)
 	runOK("tc", "qdisc", "add", "dev", ifbDev, "parent", cid, "handle", handle, "fq_codel")
+	prio := fmt.Sprintf("%d", classid) // per-peer prio so removeShapingOn can delete by prio
 	for _, ip := range append([]string{privateIP}, publicIPs...) {
 		h := host32(ip)
 		runOK("tc", "filter", "add", "dev", iface, "parent", "1:", "protocol", "ip",
-			"prio", "1", "u32", "match", "ip", "dst", h, "flowid", cid)
+			"prio", prio, "u32", "match", "ip", "dst", h, "flowid", cid)
 		runOK("tc", "filter", "add", "dev", ifbDev, "parent", "1:", "protocol", "ip",
-			"prio", "1", "u32", "match", "ip", "src", h, "flowid", cid)
+			"prio", prio, "u32", "match", "ip", "src", h, "flowid", cid)
 	}
 }
 
@@ -201,6 +210,10 @@ func removeShapingOn(iface string, classid uint16) {
 		return
 	}
 	cid := fmt.Sprintf("1:%d", classid)
+	prio := fmt.Sprintf("%d", classid)
+	// filters hang off the ROOT qdisc → must delete by prio, not via class del
+	runOK("tc", "filter", "del", "dev", iface, "parent", "1:", "prio", prio)
+	runOK("tc", "filter", "del", "dev", ifbDev, "parent", "1:", "prio", prio)
 	runOK("tc", "qdisc", "del", "dev", iface, "parent", cid)
 	runOK("tc", "qdisc", "del", "dev", ifbDev, "parent", cid)
 	runOK("tc", "class", "del", "dev", iface, "classid", cid)
