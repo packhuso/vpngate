@@ -238,8 +238,21 @@ function buildMikrotikScript(a: MikrotikArgs): string {
     `add interface=${ifName} address=${a.privateIp}/${prefix}\n` +
     `\n`;
 
+  // Clamp TCP MSS to the WireGuard MTU (1420 → MSS 1380) so PMTUD black-holes
+  // don't hang TCP / break page loads through the tunnel. SYN only, only when
+  // the announced MSS is larger than the cap (tcp-mss=1381-65535).
+  const mssClamp =
+    `/ip/firewall/mangle\n` +
+    `add chain=forward action=change-mss new-mss=1380 passthrough=yes \\\n` +
+    `    protocol=tcp tcp-flags=syn tcp-mss=1381-65535 out-interface=${ifName} \\\n` +
+    `    comment="vpnhub: clamp MSS (PMTUD-safe)"\n` +
+    `add chain=forward action=change-mss new-mss=1380 passthrough=yes \\\n` +
+    `    protocol=tcp tcp-flags=syn tcp-mss=1381-65535 in-interface=${ifName} \\\n` +
+    `    comment="vpnhub: clamp MSS (PMTUD-safe)"\n` +
+    `\n`;
+
   if (a.publicIps.length === 0) {
-    return wgIface + wgPeer + privAddr;
+    return wgIface + wgPeer + privAddr + mssClamp;
   }
 
   const loBridge =
@@ -267,5 +280,5 @@ function buildMikrotikScript(a: MikrotikArgs): string {
       )
       .join("") +
     `\n`;
-  return wgIface + wgPeer + privAddr + loBridge + polRouting;
+  return wgIface + wgPeer + privAddr + loBridge + polRouting + mssClamp;
 }

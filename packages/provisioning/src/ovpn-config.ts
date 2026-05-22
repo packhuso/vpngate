@@ -108,6 +108,9 @@ export async function getOvpnConfig(
     `data-ciphers AES-256-GCM:CHACHA20-POLY1305\n` +
     `auth SHA256\n` +
     `verb 3\n` +
+    // clamp TCP MSS so encapsulated packets fit the path MTU (PMTUD-safe);
+    // helps any client (phone/laptop), not just Mikrotik.
+    `mssfix 1400\n` +
     `\n` +
     `<ca>\n${node.ca.trim()}\n</ca>\n` +
     `<cert>\n${clientCert.trim()}\n</cert>\n` +
@@ -196,10 +199,24 @@ function buildMikrotikOvpnScript(a: MikrotikOvpnArgs): string {
     `    name=${a.ifName} disabled=no\n` +
     `\n`;
 
+  // Clamp TCP MSS through the OpenVPN tunnel (1360 — tun MTU 1500 overstates the
+  // real path once UDP+AES-GCM overhead is added) so PMTUD black-holes don't
+  // hang TCP. SYN only, only when announced MSS exceeds the cap.
+  const mssClamp =
+    `/ip/firewall/mangle\n` +
+    `add chain=forward action=change-mss new-mss=1360 passthrough=yes \\\n` +
+    `    protocol=tcp tcp-flags=syn tcp-mss=1361-65535 out-interface=${a.ifName} \\\n` +
+    `    comment="vpnhub: clamp MSS (PMTUD-safe)"\n` +
+    `add chain=forward action=change-mss new-mss=1360 passthrough=yes \\\n` +
+    `    protocol=tcp tcp-flags=syn tcp-mss=1361-65535 in-interface=${a.ifName} \\\n` +
+    `    comment="vpnhub: clamp MSS (PMTUD-safe)"\n` +
+    `\n`;
+
   if (a.publicIps.length === 0) {
     return (
       header +
       importBlock +
+      mssClamp +
       `# (no public IP assigned yet — the tunnel comes up with its private IP.\n` +
       `#  Assign a public IP in the portal, then re-download this script for the\n` +
       `#  policy-routing section.)\n`
@@ -223,6 +240,7 @@ function buildMikrotikOvpnScript(a: MikrotikOvpnArgs): string {
   return (
     header +
     importBlock +
+    mssClamp +
     `# Pure-routing: hold each public IP on a loopback bridge and source outbound\n` +
     `# traffic from it via the OpenVPN tunnel (the gateway already iroutes each\n` +
     `# /32 to this client).\n` +
