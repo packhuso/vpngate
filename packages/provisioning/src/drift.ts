@@ -21,6 +21,7 @@ interface GwRow {
   agent_endpoint: string;
   agent_ca_cert: string;
   agent_token: string;
+  bgp_enabled: boolean;
 }
 
 interface DbTunnel {
@@ -34,7 +35,8 @@ interface DbTunnel {
 
 export async function reconcileGateway(gatewayId: string): Promise<DriftReport> {
   const [gw] = await sql<GwRow[]>`
-    SELECT id, hostname, agent_endpoint, agent_ca_cert, agent_token
+    SELECT id, hostname, agent_endpoint, agent_ca_cert, agent_token,
+           COALESCE(bgp_enabled, false) AS bgp_enabled
     FROM vpn_gateways WHERE id = ${gatewayId} AND status = 'active'`;
   if (!gw) throw new Error(`gateway ${gatewayId} not active or not found`);
 
@@ -158,8 +160,13 @@ export async function reconcileGateway(gatewayId: string): Promise<DriftReport> 
 
   // 3. Ensure a blackhole route exists for every active pool CIDR (self-heal
   //    across agent restarts). Idempotent on the agent side (RouteReplace).
-  const pools = await sql<{ block: string }[]>`
-    SELECT block::text AS block FROM ip_pool`;
+  //    Skip on BGP-enabled nodes: BGP announces ONLY allocated /32s, so the
+  //    Mikrotik never routes unallocated IPs there (no loop to blackhole), and
+  //    a blackhole would otherwise need protocol-specific route-map exclusion
+  //    (impossible to match by interface on SSTP's dynamic ppp devices).
+  const pools = gw.bgp_enabled
+    ? []
+    : await sql<{ block: string }[]>`SELECT block::text AS block FROM ip_pool`;
   for (const p of pools) {
     try {
       // normalize to network/prefix (parseCidr validates the form)
