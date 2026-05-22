@@ -27,6 +27,8 @@ interface SidebarProps {
 
 const CUSTOMER_NAV = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/dashboard/tunnels", label: "Tunnels", icon: Cable },
+  { href: "/dashboard/ips", label: "Public IPs", icon: Globe },
   { href: "/dashboard/wallet", label: "Wallet", icon: Wallet },
   { href: "/dashboard/billing", label: "Billing", icon: Receipt },
 ];

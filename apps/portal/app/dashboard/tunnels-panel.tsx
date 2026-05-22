@@ -192,40 +192,35 @@ export default function TunnelsPanel() {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 200px", minWidth: 180 }}>
-            {(() => {
-              const dup = !!name && tunnels.some((t) => t.name.toLowerCase() === name.toLowerCase());
-              const badChars = !!name && !NAME_RE.test(name);
-              return (
-                <>
-                  <input className="input" required placeholder="ชื่อ tunnel (e.g. HomeRouter)"
-                    value={name} onChange={(e) => setName(e.target.value)}
-                    pattern="[A-Za-z0-9_\-]{1,100}"
-                    title="a-z A-Z 0-9 - _ เท่านั้น"
-                    style={{ width: "100%", borderColor: badChars || dup ? "var(--color-danger)" : undefined }} />
-                  {badChars && (
-                    <span style={{ fontSize: 11, color: "var(--color-danger)" }}>
-                      ใช้ได้เฉพาะอักษรอังกฤษ / ตัวเลข / - _ (ภาษาไทยใส่ใน Description)
-                    </span>
-                  )}
-                  {!badChars && dup && (
-                    <span style={{ fontSize: 11, color: "var(--color-danger)" }}>
-                      ชื่อนี้ถูกใช้แล้ว — ตั้งชื่ออื่น
-                    </span>
-                  )}
-                </>
-              );
-            })()}
-          </div>
-          <select className="input" value={tier} onChange={(e) => setTier(e.target.value)} style={{ flex: "0 1 220px", minWidth: 200 }}>
-            {TIERS.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
-          </select>
-          <button disabled={busy} className="btn btn-primary" type="submit">
-            <Plus size={16} />
-            {busy ? "Creating…" : "New tunnel"}
-          </button>
-        </div>
+        {(() => {
+          const dup = !!name && tunnels.some((t) => t.name.toLowerCase() === name.toLowerCase());
+          const badChars = !!name && !NAME_RE.test(name);
+          const hint = badChars
+            ? "ใช้ได้เฉพาะอักษรอังกฤษ / ตัวเลข / - _ (ภาษาไทยใส่ใน Description)"
+            : dup ? "ชื่อนี้ถูกใช้แล้ว — ตั้งชื่ออื่น" : "";
+          return (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
+              <div style={{ flex: "1 1 200px", minWidth: 180 }}>
+                <input className="input" required placeholder="ชื่อ tunnel (e.g. HomeRouter)"
+                  value={name} onChange={(e) => setName(e.target.value)}
+                  pattern="[A-Za-z0-9_\-]{1,100}"
+                  title="a-z A-Z 0-9 - _ เท่านั้น"
+                  style={{ width: "100%", borderColor: hint ? "var(--color-danger)" : undefined }} />
+                {/* reserved fixed-height hint line so toggling the warning never shifts the layout */}
+                <span style={{ display: "block", minHeight: 15, lineHeight: "15px", marginTop: 3, fontSize: 11, color: "var(--color-danger)" }}>
+                  {hint}
+                </span>
+              </div>
+              <select className="input" value={tier} onChange={(e) => setTier(e.target.value)} style={{ flex: "0 1 220px", minWidth: 200 }}>
+                {TIERS.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
+              </select>
+              <button disabled={busy} className="btn btn-primary" type="submit">
+                <Plus size={16} />
+                {busy ? "Creating…" : "New tunnel"}
+              </button>
+            </div>
+          );
+        })()}
         <input className="input" placeholder="คำอธิบาย (ใส่ภาษาไทยได้ เช่น เราเตอร์บ้าน ชั้น 2) — ไม่บังคับ"
           value={description} onChange={(e) => setDescription(e.target.value)} maxLength={300}
           style={{ width: "100%", marginTop: 8 }} />
