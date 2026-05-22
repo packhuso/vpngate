@@ -20,9 +20,9 @@ export interface CreateTunnelInput {
   protocol?: TunnelProtocol; // default "wireguard"
 }
 
-// The name is used verbatim as a config-file name, so keep it ASCII. A separate
-// `description` field carries any-language labels.
-export const TUNNEL_NAME_RE = /^[A-Za-z0-9 ._-]{1,100}$/;
+// The name is used verbatim as a config-file name: ASCII letters/digits/-/_ only
+// (no spaces/dots). A separate `description` field carries any-language labels.
+export const TUNNEL_NAME_RE = /^[A-Za-z0-9_-]{1,100}$/;
 
 export interface CreateTunnelResult {
   tunnelId: string;
@@ -41,7 +41,7 @@ export async function createTunnel(
   if (price == null) throw ValidationError(`bad speedTier ${input.speedTier}`);
   if (!TUNNEL_NAME_RE.test(input.name ?? "")) {
     throw ValidationError(
-      "name must be 1-100 chars, ASCII letters/digits/space/._- only (use Description for other languages)",
+      "name must be 1-100 chars: letters, digits, - or _ only (use Description for other languages)",
     );
   }
   const description = (input.description ?? "").slice(0, 300) || null;
@@ -66,6 +66,16 @@ export async function createTunnel(
     if (!wallet) throw ValidationError("wallet not found for user");
     if (Number(wallet.balance_satang) < price) {
       throw InsufficientCredit(price, Number(wallet.balance_satang));
+    }
+
+    // Name must be unique per user (any protocol, excluding deleted). A partial
+    // unique index enforces this against races; this check gives a clean error.
+    const dup = await tx`
+      SELECT 1 FROM tunnels
+      WHERE user_id = ${input.userId} AND lower(name) = lower(${input.name})
+        AND deleted_at IS NULL LIMIT 1`;
+    if (dup.length > 0) {
+      throw ValidationError(`tunnel name "${input.name}" is already in use`);
     }
 
     const gw = input.gatewayHostname

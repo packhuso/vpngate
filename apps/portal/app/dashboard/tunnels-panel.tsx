@@ -16,8 +16,8 @@ interface Tunnel {
   publicIps: PubIp[];
 }
 
-// name = config-file identifier → ASCII only. Description holds any-language text.
-const NAME_RE = /^[A-Za-z0-9 ._-]{1,100}$/;
+// name = config-file identifier → letters/digits/-/_ only. Description holds any-language text.
+const NAME_RE = /^[A-Za-z0-9_-]{1,100}$/;
 
 const TIERS = [
   { v: "tier_100mb", label: "100 Mbps · ฿100/31d" },
@@ -68,7 +68,11 @@ export default function TunnelsPanel() {
   async function create(e: React.FormEvent) {
     e.preventDefault();
     if (!NAME_RE.test(name)) {
-      setErr("ชื่อใช้ได้เฉพาะ a-z A-Z 0-9 เว้นวรรค . _ -  (ภาษาไทยให้ใส่ในช่อง Description)");
+      setErr("ชื่อใช้ได้เฉพาะ a-z A-Z 0-9 - _ เท่านั้น (ภาษาไทยให้ใส่ในช่อง Description)");
+      return;
+    }
+    if (tunnels.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
+      setErr(`ชื่อ "${name}" ถูกใช้แล้ว — ตั้งชื่ออื่น`);
       return;
     }
     const tierLabel = TIERS.find((t) => t.v === tier)?.label ?? tier;
@@ -190,16 +194,29 @@ export default function TunnelsPanel() {
 
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <div style={{ flex: "1 1 200px", minWidth: 180 }}>
-            <input className="input" required placeholder="ชื่อ tunnel (e.g. HomeRouter)"
-              value={name} onChange={(e) => setName(e.target.value)}
-              pattern="[A-Za-z0-9 ._\-]{1,100}"
-              title="a-z A-Z 0-9 เว้นวรรค . _ - เท่านั้น"
-              style={{ width: "100%", borderColor: name && !NAME_RE.test(name) ? "var(--color-danger)" : undefined }} />
-            {name && !NAME_RE.test(name) && (
-              <span style={{ fontSize: 11, color: "var(--color-danger)" }}>
-                ใช้ได้เฉพาะอักษรอังกฤษ/ตัวเลข/เว้นวรรค/. _ -  (ภาษาไทยใส่ใน Description)
-              </span>
-            )}
+            {(() => {
+              const dup = !!name && tunnels.some((t) => t.name.toLowerCase() === name.toLowerCase());
+              const badChars = !!name && !NAME_RE.test(name);
+              return (
+                <>
+                  <input className="input" required placeholder="ชื่อ tunnel (e.g. HomeRouter)"
+                    value={name} onChange={(e) => setName(e.target.value)}
+                    pattern="[A-Za-z0-9_\-]{1,100}"
+                    title="a-z A-Z 0-9 - _ เท่านั้น"
+                    style={{ width: "100%", borderColor: badChars || dup ? "var(--color-danger)" : undefined }} />
+                  {badChars && (
+                    <span style={{ fontSize: 11, color: "var(--color-danger)" }}>
+                      ใช้ได้เฉพาะอักษรอังกฤษ / ตัวเลข / - _ (ภาษาไทยใส่ใน Description)
+                    </span>
+                  )}
+                  {!badChars && dup && (
+                    <span style={{ fontSize: 11, color: "var(--color-danger)" }}>
+                      ชื่อนี้ถูกใช้แล้ว — ตั้งชื่ออื่น
+                    </span>
+                  )}
+                </>
+              );
+            })()}
           </div>
           <select className="input" value={tier} onChange={(e) => setTier(e.target.value)} style={{ flex: "0 1 220px", minWidth: 200 }}>
             {TIERS.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}

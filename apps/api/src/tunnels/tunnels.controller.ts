@@ -80,9 +80,9 @@ export class TunnelsController {
     if (!body?.speedTier || !body?.name) {
       throw new BadRequestException("speedTier, name required");
     }
-    if (!/^[A-Za-z0-9 ._-]{1,100}$/.test(body.name)) {
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(body.name)) {
       throw new BadRequestException(
-        "ชื่อใช้ได้เฉพาะ a-z A-Z 0-9 เว้นวรรค . _ - (ภาษาไทยให้ใส่ในช่อง Description)",
+        "ชื่อใช้ได้เฉพาะ a-z A-Z 0-9 - _ เท่านั้น (ภาษาไทยให้ใส่ในช่อง Description)",
       );
     }
     try {
