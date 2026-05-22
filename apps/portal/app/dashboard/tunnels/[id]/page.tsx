@@ -22,20 +22,28 @@ export default async function TunnelDetail({ params }: Params) {
   const [t] = await sql<
     {
       name: string;
+      description: string | null;
       status: string;
+      protocol: string;
       private_ip: string;
       wg_private_key_encrypted: string;
-      gw_pub: string;
-      wg_endpoint: string;
-      wg_port: number;
+      gw_pub: string | null;
+      wg_endpoint: string | null;
+      wg_port: number | null;
       private_subnet: string;
+      ovpn_endpoint: string | null;
+      sstp_endpoint: string | null;
+      ovpn_client_cert: string | null;
+      ovpn_client_key_encrypted: string | null;
       created_at: Date;
       next_billing_at: Date;
     }[]
   >`
-    SELECT t.name, t.status, host(t.private_ip) AS private_ip,
+    SELECT t.name, t.description, t.status, t.protocol, host(t.private_ip) AS private_ip,
            t.wg_private_key_encrypted, g.wg_public_key AS gw_pub,
            g.wg_endpoint, g.wg_port, g.private_subnet::text AS private_subnet,
+           g.ovpn_endpoint, g.sstp_endpoint,
+           t.ovpn_client_cert, t.ovpn_client_key_encrypted,
            t.created_at, t.next_billing_at
     FROM tunnels t JOIN vpn_gateways g ON g.id = t.gateway_id
     WHERE t.id = ${id} AND t.user_id = ${sess.userId}
@@ -53,22 +61,42 @@ export default async function TunnelDetail({ params }: Params) {
       AND deleted_at IS NULL AND status = 'active'
     ORDER BY name`;
 
-  const allowedIPs = [t.private_subnet, ...pubIps.map((p) => `${p.ip}/32`)].join(", ");
-  const privateKey = decryptSecret(t.wg_private_key_encrypted);
-  const conf =
-    `[Interface]\nPrivateKey = ${privateKey}\nAddress = ${t.private_ip}/32\n\n` +
-    `[Peer]\nPublicKey = ${t.gw_pub}\nEndpoint = ${t.wg_endpoint}:${t.wg_port}\n` +
-    `AllowedIPs = ${allowedIPs}\nPersistentKeepalive = 25\n`;
-
-  // QR — light-theme friendly colors
-  const qrDataUrl = await QRCode.toDataURL(conf, {
-    margin: 1, scale: 6,
-    color: { dark: "#0f172a", light: "#ffffff" },
-  });
-
   const statusBadge = t.status === "active" ? "badge-success"
     : t.status === "provisioning" ? "badge-warning"
     : t.status === "suspended" ? "badge-danger" : "badge-neutral";
+
+  const proto = t.protocol;
+  const protoMeta =
+    proto === "openvpn" ? { label: "OpenVPN", badge: "badge-info" }
+    : proto === "sstp" ? { label: "SSTP", badge: "badge-warning" }
+    : { label: "WireGuard", badge: "badge-primary" };
+
+  // WireGuard config + QR (only for WG tunnels; gw_pub is null for OVPN/SSTP).
+  let wgConf: string | null = null;
+  let qrDataUrl: string | null = null;
+  if (proto === "wireguard" && t.gw_pub) {
+    const allowedIPs = [t.private_subnet, ...pubIps.map((p) => `${p.ip}/32`)].join(", ");
+    const privateKey = decryptSecret(t.wg_private_key_encrypted);
+    wgConf =
+      `[Interface]\nPrivateKey = ${privateKey}\nAddress = ${t.private_ip}/32\n\n` +
+      `[Peer]\nPublicKey = ${t.gw_pub}\nEndpoint = ${t.wg_endpoint}:${t.wg_port}\n` +
+      `AllowedIPs = ${allowedIPs}\nPersistentKeepalive = 25\n`;
+    qrDataUrl = await QRCode.toDataURL(wgConf, {
+      margin: 1, scale: 6, color: { dark: "#0f172a", light: "#ffffff" },
+    });
+  }
+
+  // SSTP credentials (shown so the user can configure manually too).
+  const sstpUser = proto === "sstp" ? t.ovpn_client_cert : null;
+  const sstpPass =
+    proto === "sstp" && t.ovpn_client_key_encrypted
+      ? decryptSecret(t.ovpn_client_key_encrypted)
+      : null;
+
+  const endpoint =
+    proto === "openvpn" ? `${t.ovpn_endpoint} (UDP 1194)`
+    : proto === "sstp" ? `${t.sstp_endpoint} (TCP 443)`
+    : t.wg_endpoint ? `${t.wg_endpoint}:${t.wg_port}` : "—";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -78,38 +106,79 @@ export default async function TunnelDetail({ params }: Params) {
         </Link>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
           <h1 className="page-title">{t.name}</h1>
+          <span className={`badge ${protoMeta.badge}`}>{protoMeta.label}</span>
           <span className={`badge ${statusBadge}`}>{t.status}</span>
         </div>
+        {t.description && (
+          <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 4 }}>{t.description}</p>
+        )}
         <p className="page-subtitle mono" style={{ fontSize: 12 }}>
-          {id} · private {t.private_ip} · next billing {new Date(t.next_billing_at).toISOString().slice(0, 10)}
+          {id} · private {t.private_ip} · {endpoint} · next billing {new Date(t.next_billing_at).toISOString().slice(0, 10)}
         </p>
       </div>
 
-      {/* Config + downloads */}
+      {/* Config + downloads (per protocol) */}
       <div className="card">
         <h2 className="section-title">Client config</h2>
         <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 2 }}>
-          ดาวน์โหลด config สำหรับเครื่อง client หรือสแกน QR ด้วย WireGuard mobile app
+          {proto === "wireguard" && "ดาวน์โหลด .conf หรือสแกน QR ด้วย WireGuard mobile app · หรือใช้ Mikrotik script"}
+          {proto === "openvpn" && "ดาวน์โหลด .ovpn เข้า OpenVPN client (มือถือ/คอม) · Mikrotik ใช้ .rsc (อัปโหลดไฟล์ .ovpn ก่อน import)"}
+          {proto === "sstp" && "SSTP วิ่งบน TLS:443 (ผ่าน firewall เข้มได้) · Mikrotik ใช้ .rsc · หรือกรอก user/pass ด้านล่างเอง"}
         </p>
 
-        <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 24, marginTop: 16, alignItems: "start" }}>
-          <div style={{ background: "var(--color-bg)", padding: 8, borderRadius: 10, border: "1px solid var(--color-border)" }}>
-            <img src={qrDataUrl} alt="WireGuard config QR" style={{ width: 240, height: 240, display: "block", borderRadius: 6 }} />
-            <p style={{ fontSize: 11, color: "var(--color-text-muted)", textAlign: "center", marginTop: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
-              <Smartphone size={12} strokeWidth={2} /> Scan with WireGuard app
-            </p>
-          </div>
+        <div style={{ display: "grid", gridTemplateColumns: qrDataUrl ? "auto 1fr" : "1fr", gap: 24, marginTop: 16, alignItems: "start" }}>
+          {qrDataUrl && (
+            <div style={{ background: "var(--color-bg)", padding: 8, borderRadius: 10, border: "1px solid var(--color-border)" }}>
+              <img src={qrDataUrl} alt="WireGuard config QR" style={{ width: 240, height: 240, display: "block", borderRadius: 6 }} />
+              <p style={{ fontSize: 11, color: "var(--color-text-muted)", textAlign: "center", marginTop: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}>
+                <Smartphone size={12} strokeWidth={2} /> Scan with WireGuard app
+              </p>
+            </div>
+          )}
           <div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <a href={`/v1/tunnels/${id}/config`} download={`${t.name}.conf`}
-                className="btn btn-primary">
-                <FileDown size={16} /> Download .conf
-              </a>
-              <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`}
-                className="btn btn-secondary">
-                <FileDown size={16} /> Mikrotik script
-              </a>
+              {proto === "wireguard" && (
+                <>
+                  <a href={`/v1/tunnels/${id}/config`} download={`${t.name}.conf`} className="btn btn-primary">
+                    <FileDown size={16} /> Download .conf
+                  </a>
+                  <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`} className="btn btn-secondary">
+                    <FileDown size={16} /> Mikrotik script
+                  </a>
+                </>
+              )}
+              {proto === "openvpn" && (
+                <>
+                  <a href={`/v1/tunnels/${id}/config?format=ovpn`} download={`${t.name}.ovpn`} className="btn btn-primary">
+                    <FileDown size={16} /> Download .ovpn
+                  </a>
+                  <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.ovpn.rsc`} className="btn btn-secondary">
+                    <FileDown size={16} /> Mikrotik script
+                  </a>
+                </>
+              )}
+              {proto === "sstp" && (
+                <a href={`/v1/tunnels/${id}/config?format=sstp`} download={`${t.name}.sstp.rsc`} className="btn btn-primary">
+                  <FileDown size={16} /> Mikrotik script (.rsc)
+                </a>
+              )}
             </div>
+
+            {proto === "sstp" && (
+              <div className="card-compact" style={{ marginTop: 16, padding: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>SSTP credentials</div>
+                <table className="mono" style={{ fontSize: 12, borderCollapse: "collapse" }}>
+                  <tbody>
+                    <tr><td style={{ color: "var(--color-text-muted)", paddingRight: 12 }}>Server</td><td>{t.sstp_endpoint} : 443</td></tr>
+                    <tr><td style={{ color: "var(--color-text-muted)", paddingRight: 12 }}>Username</td><td>{sstpUser ?? "— กดโหลด .rsc เพื่อสร้าง credential —"}</td></tr>
+                    <tr><td style={{ color: "var(--color-text-muted)", paddingRight: 12 }}>Password</td><td>{sstpPass ?? "—"}</td></tr>
+                  </tbody>
+                </table>
+                <p style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 6 }}>
+                  Mikrotik: ตั้ง verify-server-certificate=no (cert เป็น self-signed)
+                </p>
+              </div>
+            )}
 
             <div className="card-compact" style={{ marginTop: 16, padding: 12 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 500 }}>
@@ -136,16 +205,18 @@ export default async function TunnelDetail({ params }: Params) {
         others={others}
       />
 
-      <div className="card">
-        <details>
-          <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--color-text-muted)" }}>
-            Show raw .conf <span style={{ color: "var(--color-danger)" }}>(contains private key)</span>
-          </summary>
-          <pre className="mono" style={{ marginTop: 12, padding: 12, background: "var(--color-bg)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-            {conf}
-          </pre>
-        </details>
-      </div>
+      {wgConf && (
+        <div className="card">
+          <details>
+            <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--color-text-muted)" }}>
+              Show raw .conf <span style={{ color: "var(--color-danger)" }}>(contains private key)</span>
+            </summary>
+            <pre className="mono" style={{ marginTop: 12, padding: 12, background: "var(--color-bg)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+              {wgConf}
+            </pre>
+          </details>
+        </div>
+      )}
     </div>
   );
 }
