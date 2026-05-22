@@ -66,10 +66,12 @@ function CredRow({ label, value, secret }: { label: string; value: string; secre
 
 export default function SstpCreds({
   server,
+  port,
   username,
   password,
 }: {
   server: string;
+  port: string;
   username: string | null;
   password: string | null;
 }) {
@@ -90,6 +92,7 @@ export default function SstpCreds({
       {username ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <CredRow label="Server" value={server} />
+          <CredRow label="Port" value={port} />
           <CredRow label="Username" value={username} />
           <CredRow label="Password" value={password ?? ""} secret />
         </div>

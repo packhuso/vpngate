@@ -187,7 +187,7 @@ export default async function TunnelDetail({ params }: Params) {
             </div>
 
             {proto === "sstp" && (
-              <SstpCreds server={`${t.sstp_endpoint}:443`} username={sstpUser} password={sstpPass} />
+              <SstpCreds server={String(t.sstp_endpoint)} port="443" username={sstpUser} password={sstpPass} />
             )}
 
             <div className="card-compact" style={{ marginTop: 16, padding: 12 }}>
