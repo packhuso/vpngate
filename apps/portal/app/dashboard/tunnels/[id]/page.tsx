@@ -8,6 +8,7 @@ import { sql } from "@vpnhub/db";
 import { decryptSecret } from "@vpnhub/shared";
 import TunnelActions from "./actions-client";
 import SstpCreds from "./sstp-creds-client";
+import ConnInfo from "./copy-field-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -186,6 +187,12 @@ export default async function TunnelDetail({ params }: Params) {
               )}
             </div>
 
+            {proto === "wireguard" && t.wg_endpoint && (
+              <ConnInfo server={String(t.wg_endpoint)} port={`${t.wg_port ?? 51820}`} />
+            )}
+            {proto === "openvpn" && (
+              <ConnInfo server={String(t.ovpn_endpoint)} port={`${t.ovpn_port ?? 1194}`} />
+            )}
             {proto === "sstp" && (
               <SstpCreds server={String(t.sstp_endpoint)} port="443" username={sstpUser} password={sstpPass} />
             )}
