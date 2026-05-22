@@ -75,6 +75,24 @@ cat > /etc/ppp/ip-up.d/vpnhub-routes <<EOF
 f="$ROUTES_D/\$PEERNAME"
 [ -f "\$f" ] || exit 0
 while read -r cidr; do [ -n "\$cidr" ] && ip route replace "\$cidr" dev "\$1"; done < "\$f"
+# speed cap: each ppp iface carries one client, so shape the whole interface.
+# kbit lives in the .rate sidecar (agent writes it). Egress = HTB hard cap;
+# ingress = policer. tc state dies with the iface, so nothing leaks.
+r="$ROUTES_D/\$PEERNAME.rate"
+if [ -f "\$r" ]; then
+  kbit=\$(head -n1 "\$r" 2>/dev/null)
+  if [ -n "\$kbit" ] && [ "\$kbit" -gt 0 ] 2>/dev/null; then
+    burst=\$((kbit/80+16))
+    tc qdisc del dev "\$1" root 2>/dev/null
+    tc qdisc del dev "\$1" ingress 2>/dev/null
+    tc qdisc add dev "\$1" root handle 1: htb default 10
+    tc class add dev "\$1" parent 1: classid 1:10 htb rate \${kbit}kbit ceil \${kbit}kbit
+    tc qdisc add dev "\$1" parent 1:10 handle 10: fq_codel
+    tc qdisc add dev "\$1" handle ffff: ingress
+    tc filter add dev "\$1" parent ffff: protocol all u32 match u32 0 0 \\
+      police rate \${kbit}kbit burst \${burst}k drop flowid :1
+  fi
+fi
 exit 0
 EOF
 cat > /etc/ppp/ip-down.d/vpnhub-routes <<EOF

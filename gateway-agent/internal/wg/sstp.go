@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ type sstpPeer struct {
 	password  string
 	privateIP string // fixed PPP IP
 	publicIPs []string
+	speedKbit int // 0 = unshaped
 	status    PeerStatus
 	createdAt time.Time
 }
@@ -93,6 +95,51 @@ func (m *SSTPManager) writeCnFile(p *sstpPeer) {
 	}
 }
 
+// rateFile stores the peer's speed cap (kbit) so ip-up.d can re-apply shaping
+// when the user reconnects (the ppp iface is recreated each session) and so the
+// agent can recover the cap after a restart.
+func (m *SSTPManager) rateFile(user string) string {
+	return filepath.Join(m.routesDir, user+".rate")
+}
+
+func (m *SSTPManager) writeRateFile(p *sstpPeer) {
+	if p.speedKbit > 0 {
+		_ = os.WriteFile(m.rateFile(p.user), []byte(fmt.Sprintf("%d\n", p.speedKbit)), 0o644)
+	} else {
+		_ = os.Remove(m.rateFile(p.user))
+	}
+}
+
+// shapePPP applies a per-interface rate cap on a PPP link. Because each ppp
+// interface carries exactly one SSTP client, no per-IP u32 filters are needed —
+// the whole interface IS the client. Egress (download to client) is an HTB hard
+// cap + fq_codel leaf; ingress (upload from client) is an ingress policer. tc
+// state dies with the interface, so there is nothing to leak on disconnect.
+// kbit <= 0 clears any existing shaping (back to line rate).
+func shapePPP(iface string, kbit int) {
+	if iface == "" {
+		return
+	}
+	// always clear first so a tier change / removal is clean
+	runOK("tc", "qdisc", "del", "dev", iface, "root")
+	runOK("tc", "qdisc", "del", "dev", iface, "ingress")
+	if kbit <= 0 {
+		return
+	}
+	rate := fmt.Sprintf("%dkbit", kbit)
+	// ~100ms of burst (kbit*1000/8/10 bytes = kbit*12.5 ≈ kbit/80 kbytes), floored.
+	burst := fmt.Sprintf("%dk", kbit/80+16)
+	// egress (download)
+	runOK("tc", "qdisc", "add", "dev", iface, "root", "handle", "1:", "htb", "default", "10")
+	runOK("tc", "class", "add", "dev", iface, "parent", "1:", "classid", "1:10", "htb", "rate", rate, "ceil", rate)
+	runOK("tc", "qdisc", "add", "dev", iface, "parent", "1:10", "handle", "10:", "fq_codel")
+	// ingress (upload) policer
+	runOK("tc", "qdisc", "add", "dev", iface, "handle", "ffff:", "ingress")
+	runOK("tc", "filter", "add", "dev", iface, "parent", "ffff:", "protocol", "all",
+		"u32", "match", "u32", "0", "0",
+		"police", "rate", rate, "burst", burst, "drop", "flowid", ":1")
+}
+
 // pppIface returns the ppp interface currently carrying the fixed IP (i.e. the
 // user is connected), or "" if the route can't be resolved (user offline).
 func pppIface(fixedIP string) string {
@@ -140,6 +187,7 @@ func (m *SSTPManager) applyRoutesLive(p *sstpPeer, stale []string) {
 	for _, ip := range expandToHost32(p.publicIPs) {
 		runOK("ip", "route", "replace", host32(ip), "dev", iface)
 	}
+	shapePPP(iface, p.speedKbit) // (re)apply the rate cap on the live iface
 }
 
 // ── chap-secrets (atomic rewrite from meta) ─────────────────────────────────
@@ -181,6 +229,11 @@ func (m *SSTPManager) loadChapSecrets() {
 		p := &sstpPeer{user: user, password: f[2], privateIP: f[3], status: StatusActive, createdAt: time.Now().UTC()}
 		if raw, err := os.ReadFile(m.cnFile(user)); err == nil {
 			p.rawKey = strings.TrimSpace(string(raw))
+		}
+		if raw, err := os.ReadFile(m.rateFile(user)); err == nil {
+			if kbit, perr := strconv.Atoi(strings.TrimSpace(string(raw))); perr == nil {
+				p.speedKbit = kbit
+			}
 		}
 		// recover public IPs from the routes file
 		if data, err := os.ReadFile(m.routeFile(user)); err == nil {
@@ -226,6 +279,7 @@ func (m *SSTPManager) CreatePeer(_ context.Context, in CreatePeerInput) (*Peer, 
 	p.peerID = in.PeerID
 	p.privateIP = in.PrivateIP
 	p.publicIPs = in.PublicIPs
+	p.speedKbit = in.SpeedLimitKbit
 	p.status = StatusActive
 	if err := m.rewriteChapSecrets(); err != nil {
 		return nil, fmt.Errorf("chap-secrets: %w", err)
@@ -234,6 +288,7 @@ func (m *SSTPManager) CreatePeer(_ context.Context, in CreatePeerInput) (*Peer, 
 		return nil, fmt.Errorf("routes file: %w", err)
 	}
 	m.writeCnFile(p)
+	m.writeRateFile(p)
 	m.applyRoutesLive(p, nil)
 	return m.peerView(p), nil
 }
@@ -251,6 +306,9 @@ func (m *SSTPManager) UpdatePeer(_ context.Context, cn string, in UpdatePeerInpu
 	old := expandToHost32(p.publicIPs)
 	p.privateIP = in.PrivateIP
 	p.publicIPs = in.PublicIPs
+	if in.SpeedLimitKbit > 0 {
+		p.speedKbit = in.SpeedLimitKbit // 0 = leave the existing cap unchanged
+	}
 	if err := m.rewriteChapSecrets(); err != nil {
 		return nil, err
 	}
@@ -258,8 +316,9 @@ func (m *SSTPManager) UpdatePeer(_ context.Context, cn string, in UpdatePeerInpu
 		return nil, err
 	}
 	m.writeCnFile(p)
+	m.writeRateFile(p)
 	// fixed IP → apply live without forcing a reconnect: drop removed /32s,
-	// (re)install the current set on the user's ppp iface.
+	// (re)install the current set + rate cap on the user's ppp iface.
 	m.applyRoutesLive(p, diff(old, expandToHost32(in.PublicIPs)))
 	return m.peerView(p), nil
 }
@@ -277,6 +336,7 @@ func (m *SSTPManager) DeletePeer(_ context.Context, cn string) error {
 	}
 	_ = os.Remove(m.routeFile(user))
 	_ = os.Remove(m.cnFile(user))
+	_ = os.Remove(m.rateFile(user))
 	delete(m.meta, user)
 	return m.rewriteChapSecrets()
 }
