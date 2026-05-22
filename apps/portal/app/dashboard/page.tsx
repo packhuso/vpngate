@@ -1,9 +1,22 @@
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { Wallet, Cable, Globe, Shield, KeyRound, Lock, ArrowRight } from "lucide-react";
+import { Wallet, Cable, Globe, Shield, KeyRound, Lock, ArrowRight, Wifi } from "lucide-react";
 import { authConfig, resolveSession } from "@vpnhub/auth";
 import { sql } from "@vpnhub/db";
+
+// The visitor's current public IP, as forwarded by Cloudflare/cloudflared.
+function clientIpFrom(h: Headers): string | null {
+  const ip =
+    h.get("cf-connecting-ip")?.trim() ||
+    h.get("x-real-ip")?.trim() ||
+    h.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    "";
+  // strip IPv4-mapped IPv6 prefix; ignore loopback (proxy-local)
+  const clean = ip.replace(/^::ffff:/, "");
+  if (!clean || clean === "127.0.0.1" || clean === "::1") return null;
+  return clean;
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,13 +34,18 @@ export default async function Dashboard() {
   const protos = await sql<{ protocol: string; n: number }[]>`
     SELECT protocol, count(*)::int AS n FROM tunnels
     WHERE user_id = ${sess.userId} AND deleted_at IS NULL GROUP BY protocol`;
-  const [ipc] = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM public_ips WHERE user_id = ${sess.userId}`;
+  const myIps = await sql<{ ip: string }[]>`
+    SELECT host(ip_address) AS ip FROM public_ips WHERE user_id = ${sess.userId}`;
 
   const cnt = (p: string) => Number(protos.find((r) => r.protocol === p)?.n ?? 0);
   const totalTunnels = protos.reduce((s, r) => s + Number(r.n), 0);
-  const ipCount = Number(ipc?.n ?? 0);
+  const ipCount = myIps.length;
   const balance = fmt(Number(w?.balance_satang ?? 0));
+
+  // "Your IP" — what the internet sees right now, and whether it's one of the
+  // user's own VPN public IPs (i.e. they're currently connected through us).
+  const clientIp = clientIpFrom(await headers());
+  const onVpn = clientIp != null && myIps.some((r) => r.ip === clientIp);
 
   const byProto = [
     { key: "wireguard", label: "WireGuard", Icon: Shield, color: "var(--color-primary)" },
@@ -41,6 +59,24 @@ export default async function Dashboard() {
         <h1 className="page-title">Dashboard</h1>
         <p className="page-subtitle">ภาพรวมบัญชีของคุณ</p>
       </header>
+
+      {/* Your IP — what the internet sees you as right now */}
+      <div className="card" style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+        <span style={{ display: "grid", placeItems: "center", width: 40, height: 40, borderRadius: 11, background: "var(--color-bg)", color: onVpn ? "#16a34a" : "var(--color-text-muted)", border: "1px solid var(--color-border)" }}>
+          <Wifi size={20} strokeWidth={2} />
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 12, color: "var(--color-text-muted)" }}>Your IP</div>
+          <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "var(--font-mono)", lineHeight: 1.2, wordBreak: "break-all" }}>
+            {clientIp ?? "ตรวจไม่พบ"}
+          </div>
+        </div>
+        {clientIp && (
+          <span className={`badge ${onVpn ? "badge-success" : "badge-neutral"}`}>
+            {onVpn ? "✓ กำลังใช้ VPN ของคุณ" : "ไม่ได้ใช้ IP ของคุณ"}
+          </span>
+        )}
+      </div>
 
       {/* Stat cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 }}>
