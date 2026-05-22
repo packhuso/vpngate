@@ -56,13 +56,49 @@ export class AdminController {
   }
 
   @Post("pricing")
-  async savePricing(@Body() body: SavePricingInput) {
+  async savePricing(
+    @Req() req: { user: { email: string } },
+    @Body() body: SavePricingInput,
+  ) {
+    const before = await getPricing();
     try {
       await savePricing(body ?? {});
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     }
-    return getPricing();
+    const after = await getPricing();
+
+    // Diff before→after so the audit entry shows exactly what the admin changed.
+    const speedChanges = after.speed.flatMap((a) => {
+      const b = before.speed.find((x) => x.tier === a.tier);
+      return b && b.priceSatang !== a.priceSatang
+        ? [{ tier: a.tier, from: b.priceSatang, to: a.priceSatang }]
+        : [];
+    });
+    const ipChanges = after.ip.flatMap((a) => {
+      const b = before.ip.find((x) => x.blockSize === a.blockSize);
+      return b && b.priceSatang !== a.priceSatang
+        ? [{ blockSize: a.blockSize, from: b.priceSatang, to: a.priceSatang }]
+        : [];
+    });
+    const allowChanges = after.allow.flatMap((a) => {
+      const b = before.allow.find((x) => x.protocol === a.protocol && x.tier === a.tier);
+      return b && b.enabled !== a.enabled
+        ? [{ protocol: a.protocol, tier: a.tier, from: b.enabled, to: a.enabled }]
+        : [];
+    });
+
+    if (speedChanges.length || ipChanges.length || allowChanges.length) {
+      const [admin] = await sql<{ id: string }[]>`
+        SELECT id FROM admin_users
+        WHERE lower(email) = lower(${req.user.email}) AND active = true`;
+      await sql`
+        INSERT INTO audit_logs (actor_type, actor_id, action, resource_type,
+          resource_id, success, metadata)
+        VALUES ('admin', ${admin?.id ?? null}, 'pricing.update', 'pricing', NULL, true,
+          ${JSON.stringify({ speed: speedChanges, ip: ipChanges, allow: allowChanges })}::jsonb)`;
+    }
+    return after;
   }
 
   // ── overview KPIs ─────────────────────────────────────────────
