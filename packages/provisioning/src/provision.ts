@@ -9,7 +9,7 @@ import {
   ValidationError,
 } from "./errors";
 
-export type TunnelProtocol = "wireguard" | "openvpn";
+export type TunnelProtocol = "wireguard" | "openvpn" | "sstp";
 
 export interface CreateTunnelInput {
   userId: string;
@@ -46,15 +46,18 @@ export async function createTunnel(
   }
   const description = (input.description ?? "").slice(0, 300) || null;
   const protocol: TunnelProtocol = input.protocol ?? "wireguard";
-  if (protocol !== "wireguard" && protocol !== "openvpn") {
+  if (protocol !== "wireguard" && protocol !== "openvpn" && protocol !== "sstp") {
     throw ValidationError(`bad protocol ${protocol}`);
   }
-  // A gateway is WG-capable when it has a wg_public_key; OVPN-capable when it
-  // has an ovpn_endpoint. Select only gateways that serve the chosen protocol.
+  // Each gateway advertises the protocols it serves via a per-protocol column:
+  // WG=wg_public_key, OpenVPN=ovpn_endpoint, SSTP=sstp_endpoint. Select only
+  // gateways that serve the chosen protocol.
   const protoFilter =
     protocol === "openvpn"
       ? sql`AND ovpn_endpoint IS NOT NULL`
-      : sql`AND wg_public_key IS NOT NULL`;
+      : protocol === "sstp"
+        ? sql`AND sstp_endpoint IS NOT NULL`
+        : sql`AND wg_public_key IS NOT NULL`;
 
   return sql.begin(async (tx) => {
     const [wallet] = await tx`

@@ -10,6 +10,7 @@ import {
   createTunnel,
   getOvpnConfig,
   getOvpnMikrotikScript,
+  getSstpConfig,
   type CreateTunnelInput,
 } from "@vpnhub/provisioning";
 import { gatewayQueue } from "./queue";
@@ -39,14 +40,16 @@ export class TunnelsService {
   // A protocol is available only when an active gateway can serve it; OpenVPN
   // lights up automatically the moment an OpenVPN node is registered.
   async availableProtocols() {
-    const [r] = await sql<{ wg: boolean; ovpn: boolean }[]>`
+    const [r] = await sql<{ wg: boolean; ovpn: boolean; sstp: boolean }[]>`
       SELECT
         COALESCE(bool_or(wg_public_key IS NOT NULL), false) AS wg,
-        COALESCE(bool_or(ovpn_endpoint IS NOT NULL), false) AS ovpn
+        COALESCE(bool_or(ovpn_endpoint IS NOT NULL), false) AS ovpn,
+        COALESCE(bool_or(sstp_endpoint IS NOT NULL), false) AS sstp
       FROM vpn_gateways WHERE status = 'active'`;
     const protocols: string[] = [];
     if (r?.wg) protocols.push("wireguard");
     if (r?.ovpn) protocols.push("openvpn");
+    if (r?.sstp) protocols.push("sstp");
     return {
       protocols,
       tiers: [
@@ -106,12 +109,15 @@ export class TunnelsService {
   async getConfig(
     userId: string,
     tunnelId: string,
-    format: "wireguard" | "mikrotik" | "openvpn" = "wireguard",
+    format: "wireguard" | "mikrotik" | "openvpn" | "sstp" = "wireguard",
   ) {
     // OpenVPN profiles assemble in the provisioning package (lazy cert issuance
     // via the gateway agent + inline .ovpn build).
     if (format === "openvpn") {
       return getOvpnConfig(userId, tunnelId);
+    }
+    if (format === "sstp") {
+      return getSstpConfig(userId, tunnelId);
     }
     // Mikrotik script differs per protocol — branch before the WG-only query.
     if (format === "mikrotik") {
@@ -120,6 +126,9 @@ export class TunnelsService {
         WHERE id = ${tunnelId} AND user_id = ${userId} AND deleted_at IS NULL`;
       if (p?.protocol === "openvpn") {
         return getOvpnMikrotikScript(userId, tunnelId);
+      }
+      if (p?.protocol === "sstp") {
+        return getSstpConfig(userId, tunnelId);
       }
     }
     const [t] = await sql<

@@ -21,7 +21,7 @@ interface CreateTunnelBody {
   name: string;
   description?: string;
   gatewayHostname?: string;
-  protocol?: "wireguard" | "openvpn";
+  protocol?: "wireguard" | "openvpn" | "sstp";
 }
 
 @Controller("tunnels")
@@ -57,7 +57,9 @@ export class TunnelsController {
         ? "mikrotik"
         : q === "openvpn" || q === "ovpn"
           ? "openvpn"
-          : "wireguard";
+          : q === "sstp"
+            ? "sstp"
+            : "wireguard";
     const r = await this.tunnels.getConfig(req.user.userId, id, fmt);
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader(

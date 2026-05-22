@@ -1,0 +1,26 @@
+[Unit]
+Description=VPN Hub Gateway Agent (SSTP node)
+After=network-online.target vpnhub-sstpd.service
+Wants=network-online.target
+
+[Service]
+# Root: write pppd chap-secrets + routes.d, manage kernel routes (ip route),
+# terminate pppd sessions on suspend/delete.
+User=root
+EnvironmentFile=/etc/vpnhub-agent/agent.env
+ExecStart=/usr/local/bin/vpnhub-agent
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# chap-secrets lives in /etc/ppp; per-user route files in /etc/vpnhub-sstp.
+ReadWritePaths=/etc/ppp /etc/vpnhub-sstp /run
+
+[Install]
+WantedBy=multi-user.target

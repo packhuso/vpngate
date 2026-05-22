@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Plus, Trash2, FileDown, Settings2, Shield, KeyRound } from "lucide-react";
+import { Plus, Trash2, FileDown, Settings2, Shield, KeyRound, Lock } from "lucide-react";
 import { notifyDataChanged, onDataChanged, confirmIpChange } from "../_components/refresh-bus";
 
 interface PubIp { ip: string; blockId: string | null }
@@ -28,6 +28,7 @@ const TIERS = [
 const PROTOCOLS = [
   { v: "wireguard", label: "WireGuard", icon: Shield, hint: "เร็ว, เบา, แนะนำ" },
   { v: "openvpn", label: "OpenVPN", icon: KeyRound, hint: "เข้ากันได้กว้าง (router/firewall เก่า)" },
+  { v: "sstp", label: "SSTP", icon: Lock, hint: "วิ่งบน TLS:443 ผ่าน firewall เข้มได้" },
 ];
 
 const statusBadge = (s: string) =>
@@ -254,8 +255,8 @@ export default function TunnelsPanel() {
                   </span>
                   <span className="mono" style={{ fontSize: 12, color: "var(--color-text-muted)" }}>{t.privateIp}</span>
                   <span className="badge-neutral badge">{t.speedTier.replace("tier_", "")}</span>
-                  <span className={t.protocol === "openvpn" ? "badge badge-info" : "badge badge-primary"}>
-                    {t.protocol === "openvpn" ? "OpenVPN" : "WireGuard"}
+                  <span className={t.protocol === "openvpn" ? "badge badge-info" : t.protocol === "sstp" ? "badge badge-warning" : "badge badge-primary"}>
+                    {t.protocol === "openvpn" ? "OpenVPN" : t.protocol === "sstp" ? "SSTP" : "WireGuard"}
                   </span>
                   <span className={`badge ${statusBadge(t.status)}`}>{t.status}</span>
 
@@ -271,6 +272,11 @@ export default function TunnelsPanel() {
                           <FileDown size={14} />Mikrotik
                         </a>
                       </>
+                    ) : t.protocol === "sstp" ? (
+                      <a href={`/v1/tunnels/${t.id}/config?format=sstp`} download={`${t.name}.sstp.rsc`}
+                        className="btn btn-secondary btn-sm" title="Mikrotik SSTP script">
+                        <FileDown size={14} />Mikrotik
+                      </a>
                     ) : (
                       <>
                         <a href={`/v1/tunnels/${t.id}/config`} download={`${t.name}.conf`}
