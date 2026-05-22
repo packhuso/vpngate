@@ -145,14 +145,7 @@ export default function TunnelsPanel() {
 
   return (
     <section className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
-        <div>
-          <h2 className="section-title">Tunnels</h2>
-          <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 2 }}>
-            แต่ละ tunnel = 1 WireGuard peer. มี speed tier ของตัวเอง, public IP มาผูก/ปลดได้
-          </p>
-        </div>
-      </div>
+      <h2 className="section-title" style={{ marginBottom: 16 }}>สร้าง tunnel ใหม่</h2>
 
       <form onSubmit={create} style={{ marginBottom: 16 }}>
         {/* Protocol picker — segmented control. OpenVPN auto-enables when an
@@ -226,6 +219,10 @@ export default function TunnelsPanel() {
           style={{ width: "100%", marginTop: 8 }} />
       </form>
       {err && <p style={{ color: "var(--color-danger)", fontSize: 13, marginBottom: 12 }}>⚠ {err}</p>}
+
+      <h2 className="section-title" style={{ marginTop: 24, marginBottom: 12, paddingTop: 16, borderTop: "1px solid var(--color-border)" }}>
+        รายการ tunnel {tunnels.length > 0 && <span style={{ color: "var(--color-text-muted)", fontWeight: 400 }}>({tunnels.length})</span>}
+      </h2>
 
       {tunnels.length === 0 ? (
         <div style={{ textAlign: "center", padding: "32px 16px", color: "var(--color-text-muted)", fontSize: 14, background: "var(--color-bg)", borderRadius: 10, border: "1px dashed var(--color-border)" }}>

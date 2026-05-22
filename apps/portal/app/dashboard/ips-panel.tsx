@@ -143,13 +143,11 @@ export default function IpsPanel() {
 
   return (
     <section className="card">
-      <div style={{ marginBottom: 16 }}>
-        <h2 className="section-title">Public IPs</h2>
-        <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 2 }}>
-          ซื้อ IP เก็บไว้ได้โดยไม่ต้องผูก tunnel ก็ได้ — ค่าเช่าคิดต่อ IP / IP Block, ย้ายระหว่าง tunnel เมื่อไหร่ก็ได้.
-          ปุ่ม <Trash2 size={12} style={{ display: "inline", verticalAlign: "middle" }} /> = คืน pool (<strong>ไม่คืนเงิน</strong>). ต้องปลดจาก tunnel ก่อน.
-        </p>
-      </div>
+      <h2 className="section-title" style={{ marginBottom: 8 }}>ซื้อ Public IP</h2>
+      <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 0, marginBottom: 16 }}>
+        ค่าเช่าคิดต่อ IP / IP Block, ย้ายระหว่าง tunnel เมื่อไหร่ก็ได้.
+        ปุ่ม <Trash2 size={12} style={{ display: "inline", verticalAlign: "middle" }} /> = คืน pool (<strong>ไม่คืนเงิน</strong>). ต้องปลดจาก tunnel ก่อน.
+      </p>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <span style={{ fontSize: 13, color: "var(--color-text-muted)" }}>Buy:</span>
