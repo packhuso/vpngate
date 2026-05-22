@@ -21,6 +21,11 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y ppp pipx nftables frr openssl iproute2
 PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin pipx install sstp-server || true
+# sstp-server 0.7.2 has a logging bug — `logger.info("pppd says", data)` raises
+# TypeError on Python 3.13 every time pppd emits diagnostics, which disrupts the
+# PPP data forwarding (LCP times out). Fix the format string in-place.
+PPP_PY=$(find /opt/pipx/venvs/sstp-server -path '*sstpd/ppp.py' 2>/dev/null | head -1)
+[ -n "$PPP_PY" ] && sed -i 's/logger.info("pppd says", data)/logger.info("pppd says: %r", data)/' "$PPP_PY"
 
 echo "== 2. ip forwarding =="
 cat > /etc/sysctl.d/99-vpnhub.conf <<EOF
@@ -46,7 +51,9 @@ refuse-pap
 refuse-chap
 refuse-mschap
 refuse-eap
-mppe required,stateless
+# No MPPE: SSTP already runs over TLS, so MPPE is redundant double-encryption
+# and Mikrotik's SSTP client won't negotiate it (causing "MPPE required" fail).
+nomppe
 auth
 name sstp
 nodefaultroute
