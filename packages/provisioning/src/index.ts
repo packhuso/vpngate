@@ -9,6 +9,7 @@ export * from "./billing-scheduler";
 export * from "./notify";
 export * from "./ovpn-config";
 export * from "./sstp-config";
+export * from "./pricing";
 export {
   cidrContains,
   cidrsOverlap,

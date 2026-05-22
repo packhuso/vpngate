@@ -6,18 +6,16 @@ import { notifyDataChanged, onDataChanged, confirmIpChange } from "../_component
 interface Single { ip: string; tunnelId: string | null; allocatedAt: string }
 interface Block { id: string; cidr: string; blockSize: number; tunnelId: string | null; ipCount: number }
 interface Tunnel { id: string; name: string; status: string }
-
-const SIZES = [
-  { v: 1, label: "/32 — 1 IP (฿100)" },
-  { v: 2, label: "/31 — 2 IPs (฿200)" },
-  { v: 4, label: "/30 — 4 IPs (฿400)" },
-  { v: 8, label: "/29 — 8 IPs (฿800)" },
-  { v: 16, label: "/28 — 16 IPs (฿1,500)" },
-  { v: 32, label: "/27 — 32 IPs (฿2,800)" },
-  { v: 64, label: "/26 — 64 IPs (฿5,200)" },
-];
+interface IpPrice { blockSize: number; priceSatang: number }
 
 const UNASSIGNED_OPT = "__unassigned__";
+
+const bahtFmt = (satang: number) =>
+  (satang / 100).toLocaleString("en-US", { maximumFractionDigits: 0 });
+const sizeLabel = (sz: number, satang: number) =>
+  sz === 1
+    ? `/32 — 1 IP (฿${bahtFmt(satang)})`
+    : `/${32 - Math.log2(sz)} — ${sz} IPs (฿${bahtFmt(satang)})`;
 
 const ip4ToInt = (ip: string): number =>
   ip.split(".").reduce((n, o) => (n << 8) + Number(o), 0) >>> 0;
@@ -27,6 +25,7 @@ export default function IpsPanel() {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [tunnels, setTunnels] = useState<Tunnel[]>([]);
   const [size, setSize] = useState(1);
+  const [prices, setPrices] = useState<IpPrice[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -39,7 +38,12 @@ export default function IpsPanel() {
     setBlocks(a.blocks ?? []);
     setTunnels((b.tunnels ?? []).filter((t: Tunnel) => t.status === "active"));
   }
-  useEffect(() => { void reload(); }, []);
+  async function loadPricing() {
+    const r = await fetch("/v1/billing/pricing", { credentials: "same-origin" });
+    if (r.ok) setPrices(((await r.json()).ip ?? []).sort((x: IpPrice, y: IpPrice) => x.blockSize - y.blockSize));
+  }
+  const sizes = prices.map((p) => ({ v: p.blockSize, label: sizeLabel(p.blockSize, p.priceSatang) }));
+  useEffect(() => { void reload(); void loadPricing(); }, []);
   // refresh when ANY panel mutates data (e.g. a tunnel is created/deleted)
   useEffect(() => onDataChanged(() => { void reload(); }), []);
 
@@ -56,7 +60,7 @@ export default function IpsPanel() {
   }
 
   async function buy() {
-    const opt = SIZES.find((s) => s.v === size);
+    const opt = sizes.find((s) => s.v === size);
     if (!confirm(`ยืนยันการซื้อ IP\n\n${opt?.label ?? size + " IP"}\n\n⚠ จะตัดเงินจาก wallet ทันที และไม่คืนเงิน`)) return;
     if (size === 1) {
       await call("Buy /32", () => fetch("/v1/ips/single", {
@@ -152,7 +156,7 @@ export default function IpsPanel() {
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         <span style={{ fontSize: 13, color: "var(--color-text-muted)" }}>Buy:</span>
         <select className="input" value={size} onChange={(e) => setSize(Number(e.target.value))} style={{ width: 220 }}>
-          {SIZES.map((s) => <option key={s.v} value={s.v}>{s.label}</option>)}
+          {sizes.map((s) => <option key={s.v} value={s.v}>{s.label}</option>)}
         </select>
         <button disabled={busy} onClick={buy} className="btn btn-primary">
           <Plus size={16} />{busy ? "…" : "Buy"}

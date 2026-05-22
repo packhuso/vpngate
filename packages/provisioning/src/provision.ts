@@ -1,8 +1,9 @@
 // createTunnel — the money-safe provisioning transaction (design Section 7.1).
 import { sql } from "@vpnhub/db";
 import { encryptSecret, generateWireguardKeypair } from "@vpnhub/shared";
-import { TIER_PRICE_SATANG, type SpeedTier } from "@vpnhub/billing";
+import { type SpeedTier } from "@vpnhub/billing";
 import { allocatePrivateIp } from "./ip";
+import { speedTierPrice, tierAllowed } from "./pricing";
 import {
   InsufficientCredit,
   NoGatewayAvailable,
@@ -37,8 +38,6 @@ const DAY_MS = 86_400_000;
 export async function createTunnel(
   input: CreateTunnelInput,
 ): Promise<CreateTunnelResult> {
-  const price = TIER_PRICE_SATANG[input.speedTier];
-  if (price == null) throw ValidationError(`bad speedTier ${input.speedTier}`);
   if (!TUNNEL_NAME_RE.test(input.name ?? "")) {
     throw ValidationError(
       "name must be 1-100 chars: letters, digits, - or _ only (use Description for other languages)",
@@ -48,6 +47,16 @@ export async function createTunnel(
   const protocol: TunnelProtocol = input.protocol ?? "wireguard";
   if (protocol !== "wireguard" && protocol !== "openvpn" && protocol !== "sstp") {
     throw ValidationError(`bad protocol ${protocol}`);
+  }
+  // Price + allow matrix come from admin-configurable pricing (migration 0010).
+  let price: number;
+  try {
+    price = await speedTierPrice(input.speedTier);
+  } catch {
+    throw ValidationError(`bad speedTier ${input.speedTier}`);
+  }
+  if (!(await tierAllowed(protocol, input.speedTier))) {
+    throw ValidationError(`${protocol} ไม่เปิดขายแพ็กเกจ ${input.speedTier} (ปิดโดยแอดมิน)`);
   }
   // Each gateway advertises the protocols it serves via a per-protocol column:
   // WG=wg_public_key, OpenVPN=ovpn_endpoint, SSTP=sstp_endpoint. Select only

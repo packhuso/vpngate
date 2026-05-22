@@ -15,6 +15,7 @@ import {
   Ticket,
   ScrollText,
   Network,
+  Package,
 } from "lucide-react";
 import NotificationBell from "./notification-bell";
 
@@ -37,6 +38,7 @@ const ADMIN_NAV = [
   { href: "/admin", label: "Overview", icon: LayoutDashboard },
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/codes", label: "Codes", icon: Ticket },
+  { href: "/admin/packages", label: "Packages", icon: Package },
   { href: "/admin/ips", label: "IP Pools", icon: Network },
   { href: "/admin/audit", label: "Audit log", icon: ScrollText },
 ];

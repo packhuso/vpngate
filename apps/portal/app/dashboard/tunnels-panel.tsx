@@ -19,11 +19,16 @@ interface Tunnel {
 // name = config-file identifier → letters/digits/-/_ only. Description holds any-language text.
 const NAME_RE = /^[A-Za-z0-9_-]{1,100}$/;
 
-const TIERS = [
-  { v: "tier_100mb", label: "100 Mbps · ฿100/31d" },
-  { v: "tier_500mb", label: "500 Mbps · ฿200/31d" },
-  { v: "tier_1gb",   label: "1 Gbps · ฿300/31d" },
-];
+const TIER_MBPS: Record<string, string> = {
+  tier_100mb: "100 Mbps",
+  tier_500mb: "500 Mbps",
+  tier_1gb: "1 Gbps",
+};
+const bahtFmt = (satang: number) =>
+  (satang / 100).toLocaleString("en-US", { maximumFractionDigits: 0 });
+
+interface SpeedPrice { tier: string; priceSatang: number; sortOrder: number }
+interface AllowCell { protocol: string; tier: string; enabled: boolean }
 
 const PROTOCOLS = [
   { v: "wireguard", label: "WireGuard", icon: Shield, hint: "เร็ว, เบา, แนะนำ" },
@@ -44,6 +49,8 @@ export default function TunnelsPanel() {
   const [tier, setTier] = useState("tier_100mb");
   const [protocol, setProtocol] = useState("wireguard");
   const [available, setAvailable] = useState<string[]>(["wireguard"]);
+  const [speedPrices, setSpeedPrices] = useState<SpeedPrice[]>([]);
+  const [allow, setAllow] = useState<AllowCell[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -61,9 +68,29 @@ export default function TunnelsPanel() {
       if (!protos.includes(protocol)) setProtocol(protos[0] ?? "wireguard");
     }
   }
-  useEffect(() => { void load(); void loadOptions(); }, []);
+  async function loadPricing() {
+    const r = await fetch("/v1/billing/pricing", { credentials: "same-origin" });
+    if (r.ok) {
+      const d = await r.json();
+      setSpeedPrices((d.speed ?? []).sort((a: SpeedPrice, b: SpeedPrice) => a.sortOrder - b.sortOrder));
+      setAllow(d.allow ?? []);
+    }
+  }
+  useEffect(() => { void load(); void loadOptions(); void loadPricing(); }, []);
   // refresh when ANY panel mutates data (e.g. an IP is assigned in IpsPanel)
   useEffect(() => onDataChanged(() => { void load(); }), []);
+
+  // Tiers the selected protocol may sell (admin allow matrix) + their prices.
+  const tiers = speedPrices
+    .filter((s) => allow.some((a) => a.protocol === protocol && a.tier === s.tier && a.enabled))
+    .map((s) => ({
+      v: s.tier,
+      label: `${TIER_MBPS[s.tier] ?? s.tier} · ฿${bahtFmt(s.priceSatang)}/31d`,
+    }));
+  // keep the selected tier valid for the current protocol
+  useEffect(() => {
+    if (tiers.length && !tiers.some((t) => t.v === tier)) setTier(tiers[0].v);
+  }, [protocol, speedPrices, allow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -75,7 +102,7 @@ export default function TunnelsPanel() {
       setErr(`ชื่อ "${name}" ถูกใช้แล้ว — ตั้งชื่ออื่น`);
       return;
     }
-    const tierLabel = TIERS.find((t) => t.v === tier)?.label ?? tier;
+    const tierLabel = tiers.find((t) => t.v === tier)?.label ?? tier;
     const protoLabel = protocol === "openvpn" ? "OpenVPN" : "WireGuard";
     if (!confirm(
       `ยืนยันการสร้าง Tunnel\n\n` +
@@ -205,9 +232,11 @@ export default function TunnelsPanel() {
                 </span>
               </div>
               <select className="input" value={tier} onChange={(e) => setTier(e.target.value)} style={{ flex: "0 1 220px", minWidth: 200 }}>
-                {TIERS.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
+                {tiers.length === 0
+                  ? <option value="">— ไม่มีแพ็กเกจสำหรับ protocol นี้ —</option>
+                  : tiers.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
               </select>
-              <button disabled={busy} className="btn btn-primary" type="submit">
+              <button disabled={busy || tiers.length === 0 || !tier} className="btn btn-primary" type="submit">
                 <Plus size={16} />
                 {busy ? "Creating…" : "New tunnel"}
               </button>

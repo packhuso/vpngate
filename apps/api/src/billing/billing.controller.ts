@@ -1,11 +1,7 @@
 import { Controller, Get, Query, Req, UseGuards } from "@nestjs/common";
 import { sql } from "@vpnhub/db";
-import {
-  IP_BLOCK_SATANG,
-  SINGLE_IP_SATANG,
-  TIER_PRICE_SATANG,
-  type SpeedTier,
-} from "@vpnhub/billing";
+import { type SpeedTier } from "@vpnhub/billing";
+import { getPricing } from "@vpnhub/provisioning";
 import { SessionGuard } from "../auth/session.guard";
 
 interface TunnelRow {
@@ -75,15 +71,21 @@ export class BillingController {
       WHERE user_id = ${userId} AND status IN ('active', 'suspended')
       ORDER BY next_billing_at ASC`;
 
+    // Pricing comes from the admin-configurable tables (migration 0010).
+    const pricing = await getPricing();
+    const tierPrice = new Map(pricing.speed.map((s) => [s.tier, s.priceSatang]));
+    const ipUnit = pricing.ip.find((i) => i.blockSize === 1)?.priceSatang ?? 0;
+    const blockPrice = new Map(pricing.ip.map((i) => [i.blockSize, i.priceSatang]));
+
     // Compute MRR (next-cycle obligation) — sum of recurring prices for each
     // active item, regardless of when the cycle hits.
     const mrrTunnels = tunnels.reduce(
-      (n, t) => n + (TIER_PRICE_SATANG[t.speed_tier] ?? 0),
+      (n, t) => n + (tierPrice.get(t.speed_tier) ?? 0),
       0,
     );
-    const mrrIps = ips.length * SINGLE_IP_SATANG;
+    const mrrIps = ips.length * ipUnit;
     const mrrBlocks = blocks.reduce(
-      (n, b) => n + (IP_BLOCK_SATANG[b.block_size] ?? Number(b.price_satang)),
+      (n, b) => n + (blockPrice.get(b.block_size) ?? Number(b.price_satang)),
       0,
     );
     const mrr = mrrTunnels + mrrIps + mrrBlocks;
@@ -107,16 +109,16 @@ export class BillingController {
 
     const items = [
       ...tunnels.map((t) =>
-        formatItem(t, "tunnel", t.name, TIER_PRICE_SATANG[t.speed_tier] ?? 0,
+        formatItem(t, "tunnel", t.name, tierPrice.get(t.speed_tier) ?? 0,
           t.next_billing_at, { id: t.id, status: t.status, speedTier: t.speed_tier }),
       ),
       ...ips.map((p) =>
-        formatItem(p, "ip", `${p.ip}/32`, SINGLE_IP_SATANG,
+        formatItem(p, "ip", `${p.ip}/32`, ipUnit,
           p.next_billing_at, { ip: p.ip, status: p.status, tunnel: p.tunnel_name }),
       ),
       ...blocks.map((b) =>
         formatItem(b, "block", b.cidr,
-          IP_BLOCK_SATANG[b.block_size] ?? Number(b.price_satang),
+          blockPrice.get(b.block_size) ?? Number(b.price_satang),
           b.next_billing_at, { id: b.id, status: b.status, blockSize: b.block_size }),
       ),
     ].sort((a, b) => {
@@ -151,6 +153,14 @@ export class BillingController {
           ? Math.floor((balance / mrr) * 31) // days at current MRR
           : null,
     };
+  }
+
+  // GET /v1/billing/pricing — current packages (speed prices, IP prices, and the
+  // protocol×tier allow matrix) so the portal can show prices + offer only the
+  // tiers an admin enabled for the chosen protocol.
+  @Get("pricing")
+  async pricing() {
+    return getPricing();
   }
 
   // GET /v1/billing/transactions?limit=50&offset=0&type=

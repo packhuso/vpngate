@@ -2,8 +2,9 @@
 // Lifecycle: pool → owned (tunnel_id=NULL on child IPs) → assigned (tunnel_id=X)
 // Billing on the block is independent from any tunnel assignment.
 import { sql } from "@vpnhub/db";
-import { BLOCK_SIZE_TO_PREFIX, IP_BLOCK_SATANG, tierRateKbit } from "@vpnhub/billing";
+import { BLOCK_SIZE_TO_PREFIX, tierRateKbit } from "@vpnhub/billing";
 import { buildGatewayClient } from "./gateway-client";
+import { ipPrice } from "./pricing";
 import {
   InsufficientCredit,
   NoIpAvailable,
@@ -103,11 +104,11 @@ export async function buyIpBlock(
   userId: string,
   blockSize: number,
 ): Promise<BuyBlockResult> {
-  const price = IP_BLOCK_SATANG[blockSize];
   const prefix = BLOCK_SIZE_TO_PREFIX[blockSize];
-  if (!price || !prefix) {
+  if (!prefix) {
     throw ValidationError(`unsupported block_size ${blockSize}`);
   }
+  const price = await ipPrice(blockSize); // admin-configurable (migration 0010)
 
   return sql.begin(async (tx) => {
     const wRows: { id: string; balance_satang: string }[] =

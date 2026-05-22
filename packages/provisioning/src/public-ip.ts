@@ -2,8 +2,9 @@
 // Lifecycle: pool → owned (tunnel_id=NULL) → assigned (tunnel_id=X) → released
 // Billing on the IP is independent from any tunnel assignment.
 import { sql } from "@vpnhub/db";
-import { SINGLE_IP_SATANG, tierRateKbit } from "@vpnhub/billing";
+import { tierRateKbit } from "@vpnhub/billing";
 import { buildGatewayClient } from "./gateway-client";
+import { ipPrice } from "./pricing";
 import {
   InsufficientCredit,
   NoIpAvailable,
@@ -109,6 +110,7 @@ export async function buyPublicIp(
   userId: string,
   ip: string,
 ): Promise<BuyIpResult> {
+  const SINGLE_IP_SATANG = await ipPrice(1); // admin-configurable (migration 0010)
   return sql.begin(async (tx) => {
     const poolRows: { id: string }[] =
       await tx`SELECT id FROM ip_pool WHERE block >>= ${ip}::inet LIMIT 1`;

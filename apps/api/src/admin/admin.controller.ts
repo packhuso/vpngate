@@ -18,6 +18,9 @@ import {
   cidrsOverlap,
   isAligned,
   parseCidr,
+  getPricing,
+  savePricing,
+  type SavePricingInput,
 } from "@vpnhub/provisioning";
 import { AdminGuard } from "../auth/admin.guard";
 
@@ -46,6 +49,22 @@ async function pushBlackholeAllGateways(cidr: string, add: boolean) {
 @Controller("admin")
 @UseGuards(AdminGuard)
 export class AdminController {
+  // ── packages: pricing + protocol×tier allow matrix (migration 0010) ──
+  @Get("pricing")
+  async getPricing() {
+    return getPricing();
+  }
+
+  @Post("pricing")
+  async savePricing(@Body() body: SavePricingInput) {
+    try {
+      await savePricing(body ?? {});
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+    return getPricing();
+  }
+
   // ── overview KPIs ─────────────────────────────────────────────
   @Get("overview")
   async overview() {

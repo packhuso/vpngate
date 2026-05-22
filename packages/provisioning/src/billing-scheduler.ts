@@ -19,14 +19,12 @@
 //                              ip/block: detach from tunnel, return to pool
 import { sql } from "@vpnhub/db";
 import {
-  IP_BLOCK_SATANG,
-  SINGLE_IP_SATANG,
-  TIER_PRICE_SATANG,
   chargeIdempotencyKey,
   deleteAfter,
   nextBillingAt,
   type SpeedTier,
 } from "@vpnhub/billing";
+import { speedTierPrice, ipPrice } from "./pricing";
 import { notify } from "./notify";
 import { buildGatewayClient } from "./gateway-client";
 
@@ -173,8 +171,12 @@ export async function chargeOneTunnel(
       WHERE id = ${tunnelId} AND deleted_at IS NULL FOR UPDATE`;
     const t = tRows[0];
     if (!t) return "skipped";
-    const price = TIER_PRICE_SATANG[t.speed_tier];
-    if (!price) return "skipped";
+    let price: number;
+    try {
+      price = await speedTierPrice(t.speed_tier);
+    } catch {
+      return "skipped";
+    }
 
     const wRows: { id: string; balance_satang: string }[] = await tx`
       SELECT id, balance_satang FROM credit_wallets
@@ -221,6 +223,7 @@ export async function chargeOnePublicIp(
   ip: string,
   now: Date = new Date(),
 ): Promise<ChargeOutcome> {
+  const SINGLE_IP_SATANG = await ipPrice(1); // admin-configurable (migration 0010)
   return sql.begin(async (tx: Tx) => {
     const rows: {
       ip_address: string;
@@ -294,7 +297,7 @@ export async function chargeOneIpBlock(
       FROM ip_blocks WHERE id = ${blockId} FOR UPDATE`;
     const b = bRows[0];
     if (!b) return "skipped";
-    const price = IP_BLOCK_SATANG[b.block_size] ?? Number(b.price_satang);
+    const price = await ipPrice(b.block_size).catch(() => Number(b.price_satang));
 
     const wRows: { id: string; balance_satang: string }[] = await tx`
       SELECT id, balance_satang FROM credit_wallets
