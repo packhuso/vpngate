@@ -32,9 +32,11 @@ export default async function TunnelDetail({ params }: Params) {
       wg_port: number | null;
       private_subnet: string;
       ovpn_endpoint: string | null;
+      ovpn_port: number | null;
       sstp_endpoint: string | null;
       ovpn_client_cert: string | null;
       ovpn_client_key_encrypted: string | null;
+      config_blob: string | null;
       created_at: Date;
       next_billing_at: Date;
     }[]
@@ -42,8 +44,8 @@ export default async function TunnelDetail({ params }: Params) {
     SELECT t.name, t.description, t.status, t.protocol, host(t.private_ip) AS private_ip,
            t.wg_private_key_encrypted, g.wg_public_key AS gw_pub,
            g.wg_endpoint, g.wg_port, g.private_subnet::text AS private_subnet,
-           g.ovpn_endpoint, g.sstp_endpoint,
-           t.ovpn_client_cert, t.ovpn_client_key_encrypted,
+           g.ovpn_endpoint, g.ovpn_port, g.sstp_endpoint,
+           t.ovpn_client_cert, t.ovpn_client_key_encrypted, t.config_blob,
            t.created_at, t.next_billing_at
     FROM tunnels t JOIN vpn_gateways g ON g.id = t.gateway_id
     WHERE t.id = ${id} AND t.user_id = ${sess.userId}
@@ -84,6 +86,25 @@ export default async function TunnelDetail({ params }: Params) {
     qrDataUrl = await QRCode.toDataURL(wgConf, {
       margin: 1, scale: 6, color: { dark: "#0f172a", light: "#ffffff" },
     });
+  }
+
+  // OpenVPN raw .ovpn — assembled from the cached creds (no agent call). Only
+  // available once the .ovpn has been downloaded at least once (creds cached).
+  let ovpnConf: string | null = null;
+  if (proto === "openvpn" && t.ovpn_client_cert && t.ovpn_client_key_encrypted && t.config_blob) {
+    try {
+      const node = JSON.parse(t.config_blob) as { ca: string };
+      const host = String(t.ovpn_endpoint).split(":")[0];
+      const clientKey = decryptSecret(t.ovpn_client_key_encrypted);
+      ovpnConf =
+        `client\ndev tun\nproto udp\nremote ${host} ${t.ovpn_port ?? 1194}\n` +
+        `resolv-retry infinite\nnobind\npersist-key\npersist-tun\n` +
+        `remote-cert-tls server\ncipher AES-256-GCM\n` +
+        `data-ciphers AES-256-GCM:CHACHA20-POLY1305\nauth SHA256\nverb 3\nmssfix 1400\n\n` +
+        `<ca>\n${node.ca.trim()}\n</ca>\n` +
+        `<cert>\n${t.ovpn_client_cert.trim()}\n</cert>\n` +
+        `<key>\n${clientKey.trim()}\n</key>\n`;
+    } catch { /* malformed cache → no raw view */ }
   }
 
   // SSTP credentials (shown so the user can configure manually too).
@@ -205,14 +226,14 @@ export default async function TunnelDetail({ params }: Params) {
         others={others}
       />
 
-      {wgConf && (
+      {(wgConf || ovpnConf) && (
         <div className="card">
           <details>
             <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--color-text-muted)" }}>
-              Show raw .conf <span style={{ color: "var(--color-danger)" }}>(contains private key)</span>
+              Show raw {wgConf ? ".conf" : ".ovpn"} <span style={{ color: "var(--color-danger)" }}>(contains private key)</span>
             </summary>
             <pre className="mono" style={{ marginTop: 12, padding: 12, background: "var(--color-bg)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-              {wgConf}
+              {wgConf ?? ovpnConf}
             </pre>
           </details>
         </div>
