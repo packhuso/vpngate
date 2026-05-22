@@ -17,6 +17,10 @@ type Config struct {
 	OVPNPkiDir   string // PKI dir for client-cert issuance (ca.crt, ca.key, tc.key)
 	OVPNMgmtAddr string // management iface: "127.0.0.1:7505" or "unix:/run/openvpn/mgmt.sock"
 
+	// SSTP backend only (sstp-server + pppd)
+	SSTPChapPath  string // pppd chap-secrets, e.g. /etc/ppp/chap-secrets
+	SSTPRoutesDir string // per-user public-/32 routes for ip-up.d, e.g. /etc/vpnhub-sstp/routes.d
+
 	// Security (design Section 6.1 — mTLS + Bearer; firewall is host-level)
 	TLSDisable  bool   // dev only: serve plain HTTP (NEVER in production)
 	ServerCert  string // PEM path — agent server cert
@@ -62,6 +66,8 @@ func Load() (*Config, error) {
 		OVPNCcdDir:            env("AGENT_OVPN_CCD_DIR", "/etc/openvpn/ccd"),
 		OVPNPkiDir:            env("AGENT_OVPN_PKI_DIR", "/etc/openvpn/pki"),
 		OVPNMgmtAddr:          env("AGENT_OVPN_MGMT_ADDR", "127.0.0.1:7505"),
+		SSTPChapPath:          env("AGENT_SSTP_CHAP_SECRETS", "/etc/ppp/chap-secrets"),
+		SSTPRoutesDir:         env("AGENT_SSTP_ROUTES_DIR", "/etc/vpnhub-sstp/routes.d"),
 		TLSDisable:            envBool("AGENT_TLS_DISABLE", false),
 		ServerCert:            env("AGENT_TLS_SERVER_CERT", ""),
 		ServerKey:             env("AGENT_TLS_SERVER_KEY", ""),

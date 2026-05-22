@@ -48,6 +48,14 @@ func main() {
 			os.Exit(1)
 		}
 		mgr = om
+	case "sstp":
+		sm, err := wg.NewSSTPManager(cfg.SSTPChapPath, cfg.SSTPRoutesDir)
+		if err != nil {
+			log.Error("sstp backend init failed", "err", err,
+				"hint", "routes dir writable? AGENT_SSTP_ROUTES_DIR / AGENT_SSTP_CHAP_SECRETS")
+			os.Exit(1)
+		}
+		mgr = sm
 	default:
 		log.Error("invalid AGENT_WG_BACKEND", "value", cfg.WGBackend)
 		os.Exit(1)
