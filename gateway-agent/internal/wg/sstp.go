@@ -31,6 +31,8 @@ import (
 
 type sstpPeer struct {
 	peerID    string
+	rawKey    string // the control plane's publicKey slot (verbatim) — returned in
+	          // peerView so drift can match against the DB; sanitize is lossy.
 	user      string // chap-secrets username (sanitized publicKey)
 	password  string
 	privateIP string // fixed PPP IP
@@ -77,6 +79,18 @@ func sstpUser(cn string) string { return sanitizeCN(cn) }
 
 func (m *SSTPManager) routeFile(user string) string {
 	return filepath.Join(m.routesDir, user)
+}
+
+// cnFile stores the raw publicKey alongside the user (sanitize is lossy, so we
+// can't recover it from chap-secrets after a restart).
+func (m *SSTPManager) cnFile(user string) string {
+	return filepath.Join(m.routesDir, user+".cn")
+}
+
+func (m *SSTPManager) writeCnFile(p *sstpPeer) {
+	if p.rawKey != "" {
+		_ = os.WriteFile(m.cnFile(p.user), []byte(p.rawKey), 0o600)
+	}
 }
 
 // pppIface returns the ppp interface currently carrying the fixed IP (i.e. the
@@ -165,6 +179,9 @@ func (m *SSTPManager) loadChapSecrets() {
 		}
 		user := f[0]
 		p := &sstpPeer{user: user, password: f[2], privateIP: f[3], status: StatusActive, createdAt: time.Now().UTC()}
+		if raw, err := os.ReadFile(m.cnFile(user)); err == nil {
+			p.rawKey = strings.TrimSpace(string(raw))
+		}
 		// recover public IPs from the routes file
 		if data, err := os.ReadFile(m.routeFile(user)); err == nil {
 			for _, ln := range strings.Split(string(data), "\n") {
@@ -205,6 +222,7 @@ func (m *SSTPManager) CreatePeer(_ context.Context, in CreatePeerInput) (*Peer, 
 		p = &sstpPeer{user: user, password: genPassword(), createdAt: time.Now().UTC()}
 		m.meta[user] = p
 	}
+	p.rawKey = in.PublicKey
 	p.peerID = in.PeerID
 	p.privateIP = in.PrivateIP
 	p.publicIPs = in.PublicIPs
@@ -215,6 +233,7 @@ func (m *SSTPManager) CreatePeer(_ context.Context, in CreatePeerInput) (*Peer, 
 	if err := m.writeRoutesFile(p); err != nil {
 		return nil, fmt.Errorf("routes file: %w", err)
 	}
+	m.writeCnFile(p)
 	m.applyRoutesLive(p, nil)
 	return m.peerView(p), nil
 }
@@ -228,6 +247,7 @@ func (m *SSTPManager) UpdatePeer(_ context.Context, cn string, in UpdatePeerInpu
 		p = &sstpPeer{user: user, password: genPassword(), status: StatusActive, createdAt: time.Now().UTC()}
 		m.meta[user] = p
 	}
+	p.rawKey = cn
 	old := expandToHost32(p.publicIPs)
 	p.privateIP = in.PrivateIP
 	p.publicIPs = in.PublicIPs
@@ -237,6 +257,7 @@ func (m *SSTPManager) UpdatePeer(_ context.Context, cn string, in UpdatePeerInpu
 	if err := m.writeRoutesFile(p); err != nil {
 		return nil, err
 	}
+	m.writeCnFile(p)
 	// fixed IP → apply live without forcing a reconnect: drop removed /32s,
 	// (re)install the current set on the user's ppp iface.
 	m.applyRoutesLive(p, diff(old, expandToHost32(in.PublicIPs)))
@@ -255,6 +276,7 @@ func (m *SSTPManager) DeletePeer(_ context.Context, cn string) error {
 		killSession(p.privateIP)
 	}
 	_ = os.Remove(m.routeFile(user))
+	_ = os.Remove(m.cnFile(user))
 	delete(m.meta, user)
 	return m.rewriteChapSecrets()
 }
@@ -355,9 +377,13 @@ func (m *SSTPManager) IssueClientCert(_ context.Context, cn string) (*ClientCert
 }
 
 func (m *SSTPManager) peerView(p *sstpPeer) *Peer {
+	pk := p.rawKey
+	if pk == "" {
+		pk = p.user
+	}
 	return &Peer{
 		PeerID:    p.peerID,
-		PublicKey: p.user,
+		PublicKey: pk, // raw key so drift matches the DB's wg_public_key
 		PrivateIP: p.privateIP,
 		PublicIPs: p.publicIPs,
 		Status:    p.status,
