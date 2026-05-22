@@ -42,6 +42,20 @@ export class TunnelsController {
     return this.tunnels.availableProtocols();
   }
 
+  // GET /v1/tunnels/:id/sstp-credentials — issues + caches the SSTP creds on
+  // first call so the detail page can show them without downloading the .rsc.
+  @Get(":id/sstp-credentials")
+  async sstpCredentials(
+    @Req() req: { user: { userId: string } },
+    @Param("id") id: string,
+  ) {
+    try {
+      return await this.tunnels.sstpCredentials(req.user.userId, id);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
   // GET /v1/tunnels/:id/config?format=wireguard|mikrotik
   @Get(":id/config")
   async config(

@@ -27,10 +27,23 @@ export interface SstpConfigResult {
   conf: string;
 }
 
-export async function getSstpConfig(
+export interface SstpCredentials {
+  server: string;
+  port: number;
+  username: string;
+  password: string;
+}
+
+/** Ensure the tunnel's SSTP credentials exist (issuing + caching them via the
+ *  gateway agent on first call) and return them. The agent's IssueClientCert is
+ *  idempotent for SSTP — it returns the existing username/password from
+ *  chap-secrets — so this is safe to call repeatedly (e.g. on every page view).
+ *  Shared by getSstpConfig and the credentials API so the portal can show creds
+ *  on first load without the user having to download the .rsc first. */
+export async function ensureSstpCredentials(
   userId: string,
   tunnelId: string,
-): Promise<SstpConfigResult> {
+): Promise<SstpCredentials> {
   const [t] = await sql<SstpRow[]>`
     SELECT t.id, t.name, t.status, t.protocol, t.wg_public_key,
            t.ovpn_client_cert, t.ovpn_client_key_encrypted,
@@ -60,7 +73,17 @@ export async function getSstpConfig(
       WHERE id = ${tunnelId}`;
   }
 
-  const host = String(t.sstp_endpoint).split(":")[0];
+  return { server: String(t.sstp_endpoint).split(":")[0], port: 443, username: user, password: pass };
+}
+
+export async function getSstpConfig(
+  userId: string,
+  tunnelId: string,
+): Promise<SstpConfigResult> {
+  const { server: host, username: user, password: pass } = await ensureSstpCredentials(userId, tunnelId);
+  const [t] = await sql<{ name: string }[]>`
+    SELECT name FROM tunnels WHERE id = ${tunnelId} AND user_id = ${userId} AND deleted_at IS NULL`;
+  if (!t) throw NotFound("tunnel");
   const safeName = t.name.replace(/[^A-Za-z0-9_-]/g, "_") || "tunnel";
   const ifName = "sstp-vpnhub";
 

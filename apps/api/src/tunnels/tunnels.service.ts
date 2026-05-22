@@ -11,6 +11,7 @@ import {
   getOvpnConfig,
   getOvpnMikrotikScript,
   getSstpConfig,
+  ensureSstpCredentials,
   type CreateTunnelInput,
 } from "@vpnhub/provisioning";
 import { gatewayQueue } from "./queue";
@@ -105,6 +106,12 @@ export class TunnelsService {
   }
 
   // GET /v1/tunnels/:id/config?format=wireguard|mikrotik|openvpn
+  // SSTP credentials (server/port/username/password), issuing + caching them on
+  // first call. Lets the portal show creds on first page load (no .rsc click).
+  async sstpCredentials(userId: string, tunnelId: string) {
+    return ensureSstpCredentials(userId, tunnelId);
+  }
+
   // Private key is decrypted on demand only (encrypted at rest, design §6.5).
   async getConfig(
     userId: string,
