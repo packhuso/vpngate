@@ -7,6 +7,7 @@ import { authConfig, resolveSession } from "@vpnhub/auth";
 import { sql } from "@vpnhub/db";
 import { decryptSecret } from "@vpnhub/shared";
 import TunnelActions from "./actions-client";
+import SstpCreds from "./sstp-creds-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -186,19 +187,7 @@ export default async function TunnelDetail({ params }: Params) {
             </div>
 
             {proto === "sstp" && (
-              <div className="card-compact" style={{ marginTop: 16, padding: 12 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 6 }}>SSTP credentials</div>
-                <table className="mono" style={{ fontSize: 12, borderCollapse: "collapse" }}>
-                  <tbody>
-                    <tr><td style={{ color: "var(--color-text-muted)", paddingRight: 12 }}>Server</td><td>{t.sstp_endpoint} : 443</td></tr>
-                    <tr><td style={{ color: "var(--color-text-muted)", paddingRight: 12 }}>Username</td><td>{sstpUser ?? "— กดโหลด .rsc เพื่อสร้าง credential —"}</td></tr>
-                    <tr><td style={{ color: "var(--color-text-muted)", paddingRight: 12 }}>Password</td><td>{sstpPass ?? "—"}</td></tr>
-                  </tbody>
-                </table>
-                <p style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 6 }}>
-                  Mikrotik: ตั้ง verify-server-certificate=no (cert เป็น self-signed)
-                </p>
-              </div>
+              <SstpCreds server={`${t.sstp_endpoint}:443`} username={sstpUser} password={sstpPass} />
             )}
 
             <div className="card-compact" style={{ marginTop: 16, padding: 12 }}>
