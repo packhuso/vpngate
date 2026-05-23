@@ -85,9 +85,16 @@ export default async function TunnelDetail({ params }: Params) {
       `[Interface]\nPrivateKey = ${privateKey}\nAddress = ${t.private_ip}/32\n\n` +
       `[Peer]\nPublicKey = ${t.gw_pub}\nEndpoint = ${t.wg_endpoint}:${t.wg_port}\n` +
       `AllowedIPs = ${allowedIPs}\nPersistentKeepalive = 25\n`;
-    qrDataUrl = await QRCode.toDataURL(wgConf, {
-      margin: 1, scale: 6, color: { dark: "#0f172a", light: "#ffffff" },
-    });
+    // A WG config with many public IPs (e.g. a /24 block) can exceed the QR
+    // capacity — that's fine, just skip the QR (the .conf download + raw view
+    // still work). Don't let it crash the whole page.
+    try {
+      qrDataUrl = await QRCode.toDataURL(wgConf, {
+        margin: 1, scale: 6, color: { dark: "#0f172a", light: "#ffffff" },
+      });
+    } catch {
+      qrDataUrl = null;
+    }
   }
 
   // OpenVPN raw .ovpn — assembled from the cached creds (no agent call). Only
