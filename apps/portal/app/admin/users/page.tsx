@@ -1,17 +1,54 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Search, UserCircle2, Cable } from "lucide-react";
+import { Search, UserCircle2, Cable, Globe, Boxes, Check } from "lucide-react";
 
 interface User {
   id: string; email: string; name: string | null; status: string;
   lastLoginAt: string | null; balanceSatang: number; createdAt: string;
 }
+interface TunnelItem { id: string; name: string; status: string; speed_tier: string; price_satang: number | null; private_ip: string; created_at: string }
+interface IpItem { ip: string; status: string; price_satang: number | null; tunnel_name: string | null }
+interface BlockItem { id: string; cidr: string; block_size: number; price_satang: number | null; status: string }
 interface UserDetail {
   user: User & { lifetimeTopupSatang: number; lifetimeSpentSatang: number };
-  tunnels: { id: string; name: string; status: string; speed_tier: string; private_ip: string; created_at: string }[];
+  tunnels: TunnelItem[];
+  ips: IpItem[];
+  blocks: BlockItem[];
 }
 
 const fmt = (s: number) => `฿${(s / 100).toFixed(2)}`;
+
+// Inline locked-price editor for one purchased item.
+function PriceEditor({ endpoint, satang, onSaved }: { endpoint: string; satang: number | null; onSaved: () => void }) {
+  const [val, setVal] = useState((Number(satang ?? 0) / 100).toString());
+  const [busy, setBusy] = useState(false);
+  const [ok, setOk] = useState(false);
+  useEffect(() => { setVal((Number(satang ?? 0) / 100).toString()); setOk(false); }, [satang]);
+  const dirty = Math.round(Number(val) * 100) !== Number(satang ?? 0);
+  async function save() {
+    setBusy(true); setOk(false);
+    try {
+      const r = await fetch(endpoint, {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priceSatang: Math.round(Number(val) * 100) }),
+      });
+      if (r.ok) { setOk(true); onSaved(); }
+    } finally { setBusy(false); }
+  }
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      <span style={{ color: "var(--color-text-muted)", fontSize: 12 }}>฿</span>
+      <input className="input" type="number" min={0} step={1} value={val}
+        onChange={(e) => setVal(e.target.value)}
+        style={{ width: 78, padding: "3px 6px", fontSize: 12 }} />
+      <button className="btn btn-sm" disabled={busy || !dirty} onClick={save}
+        style={{ padding: "3px 7px" }} title="บันทึกราคา">
+        {ok && !dirty ? <Check size={13} /> : "บันทึก"}
+      </button>
+    </span>
+  );
+}
 
 export default function AdminUsers() {
   const [q, setQ] = useState("");
@@ -140,6 +177,7 @@ export default function AdminUsers() {
                 {msg && <p style={{ marginTop: 8, fontSize: 13, color: msg.startsWith("✓") ? "var(--color-success)" : "var(--color-danger)" }}>{msg}</p>}
               </div>
 
+              {/* Purchased items — locked prices, editable per item (grandfathered) */}
               <div style={{ marginTop: 16 }}>
                 <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
                   <Cable size={14} strokeWidth={2} /> Tunnels ({selected.tunnels.length})
@@ -155,6 +193,58 @@ export default function AdminUsers() {
                         <td className="mono" style={{ color: "var(--color-text-muted)" }}>{t.private_ip}</td>
                         <td>{t.speed_tier.replace("tier_", "")}</td>
                         <td><span className={t.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{t.status}</span></td>
+                        <td style={{ textAlign: "right" }}>
+                          <PriceEditor endpoint={`/v1/admin/tunnels/${t.id}/price`} satang={t.price_satang}
+                            onSaved={() => open(selected.user)} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                  <Globe size={14} strokeWidth={2} /> Public IPs ({selected.ips.length})
+                </div>
+                <table className="table-default" style={{ marginTop: 6, fontSize: 13 }}>
+                  <tbody>
+                    {selected.ips.length === 0 && (
+                      <tr><td style={{ color: "var(--color-text-muted)", padding: 12, textAlign: "center" }}>ไม่มี single IP</td></tr>
+                    )}
+                    {selected.ips.map((p) => (
+                      <tr key={p.ip}>
+                        <td className="mono" style={{ fontWeight: 500 }}>{p.ip}</td>
+                        <td style={{ color: "var(--color-text-muted)" }}>{p.tunnel_name ?? "— unassigned —"}</td>
+                        <td><span className={p.status === "allocated" ? "badge badge-success" : "badge badge-neutral"}>{p.status}</span></td>
+                        <td style={{ textAlign: "right" }}>
+                          <PriceEditor endpoint={`/v1/admin/ips/${p.ip}/price`} satang={p.price_satang}
+                            onSaved={() => open(selected.user)} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                  <Boxes size={14} strokeWidth={2} /> IP Blocks ({selected.blocks.length})
+                </div>
+                <table className="table-default" style={{ marginTop: 6, fontSize: 13 }}>
+                  <tbody>
+                    {selected.blocks.length === 0 && (
+                      <tr><td style={{ color: "var(--color-text-muted)", padding: 12, textAlign: "center" }}>ไม่มี block</td></tr>
+                    )}
+                    {selected.blocks.map((b) => (
+                      <tr key={b.id}>
+                        <td className="mono" style={{ fontWeight: 500 }}>{b.cidr}</td>
+                        <td style={{ color: "var(--color-text-muted)" }}>{b.block_size} IPs</td>
+                        <td><span className={b.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{b.status}</span></td>
+                        <td style={{ textAlign: "right" }}>
+                          <PriceEditor endpoint={`/v1/admin/ip-blocks/${b.id}/price`} satang={b.price_satang}
+                            onSaved={() => open(selected.user)} />
+                        </td>
                       </tr>
                     ))}
                   </tbody>

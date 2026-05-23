@@ -176,10 +176,23 @@ export class AdminController {
       WHERE u.id = ${id}`;
     if (!u) throw new BadRequestException("user not found");
     const tunnels = await sql`
-      SELECT id, name, status, speed_tier, host(private_ip) AS private_ip,
-             created_at
+      SELECT id, name, status, speed_tier, price_satang,
+             host(private_ip) AS private_ip, created_at
       FROM tunnels WHERE user_id = ${id} AND deleted_at IS NULL
       ORDER BY created_at DESC`;
+    // Standalone single IPs (block members are billed via their block).
+    const ips = await sql`
+      SELECT host(p.ip_address) AS ip, p.status, p.price_satang,
+             t.name AS tunnel_name
+      FROM public_ips p
+      LEFT JOIN tunnels t ON t.id = p.tunnel_id
+      WHERE p.user_id = ${id} AND p.block_id IS NULL
+        AND p.status IN ('allocated', 'suspended')
+      ORDER BY p.ip_address`;
+    const blocks = await sql`
+      SELECT id, block::text AS cidr, block_size, price_satang, status
+      FROM ip_blocks WHERE user_id = ${id} AND status IN ('active', 'suspended')
+      ORDER BY block`;
     return {
       user: {
         id: u.id,
@@ -192,7 +205,87 @@ export class AdminController {
         lifetimeSpentSatang: Number(u.lifetime_spent_satang),
       },
       tunnels,
+      ips,
+      blocks,
     };
+  }
+
+  // ── per-item price override (grandfathered price for a bought item) ──
+  // Sets the LOCKED price the customer is charged next cycle. Audited.
+  private async overridePrice(
+    adminEmail: string,
+    kind: "tunnel" | "ip" | "block",
+    ref: string,
+    priceSatang: number,
+  ) {
+    if (!Number.isInteger(priceSatang) || priceSatang < 0) {
+      throw new BadRequestException("priceSatang must be a non-negative integer");
+    }
+    return sql.begin(async (tx) => {
+      const [admin] = await tx<{ id: string }[]>`
+        SELECT id FROM admin_users WHERE lower(email)=lower(${adminEmail}) AND active=true`;
+      let before: number | null = null;
+      let userId: string | null = null;
+      if (kind === "tunnel") {
+        const [r] = await tx<{ price_satang: string | null; user_id: string }[]>`
+          SELECT price_satang, user_id FROM tunnels WHERE id = ${ref} AND deleted_at IS NULL FOR UPDATE`;
+        if (!r) throw new BadRequestException("tunnel not found");
+        before = r.price_satang == null ? null : Number(r.price_satang);
+        userId = r.user_id;
+        await tx`UPDATE tunnels SET price_satang = ${priceSatang} WHERE id = ${ref}`;
+      } else if (kind === "ip") {
+        const [r] = await tx<{ price_satang: string | null; user_id: string | null; block_id: string | null }[]>`
+          SELECT price_satang, user_id, block_id FROM public_ips WHERE ip_address = ${ref}::inet FOR UPDATE`;
+        if (!r) throw new BadRequestException("ip not found");
+        if (r.block_id) throw new BadRequestException("IP belongs to a block — edit the block price instead");
+        before = r.price_satang == null ? null : Number(r.price_satang);
+        userId = r.user_id;
+        await tx`UPDATE public_ips SET price_satang = ${priceSatang} WHERE ip_address = ${ref}::inet`;
+      } else {
+        const [r] = await tx<{ price_satang: string | null; user_id: string }[]>`
+          SELECT price_satang, user_id FROM ip_blocks WHERE id = ${ref} FOR UPDATE`;
+        if (!r) throw new BadRequestException("block not found");
+        before = r.price_satang == null ? null : Number(r.price_satang);
+        userId = r.user_id;
+        await tx`UPDATE ip_blocks SET price_satang = ${priceSatang} WHERE id = ${ref}`;
+      }
+      await tx`
+        INSERT INTO audit_logs (actor_type, actor_id, action, resource_type,
+          resource_id, success, metadata)
+        VALUES ('admin', ${admin?.id ?? null}, 'pricing.item_override', ${kind}, ${ref}, true,
+          ${JSON.stringify({ userId, from: before, to: priceSatang })}::jsonb)`;
+      return { ok: true, kind, ref, priceSatang };
+    });
+  }
+
+  @Post("tunnels/:id/price")
+  @HttpCode(200)
+  async setTunnelPrice(
+    @Req() req: { user: { email: string } },
+    @Param("id") id: string,
+    @Body() body: { priceSatang: number },
+  ) {
+    return this.overridePrice(req.user.email, "tunnel", id, body?.priceSatang);
+  }
+
+  @Post("ips/:ip/price")
+  @HttpCode(200)
+  async setIpPrice(
+    @Req() req: { user: { email: string } },
+    @Param("ip") ip: string,
+    @Body() body: { priceSatang: number },
+  ) {
+    return this.overridePrice(req.user.email, "ip", ip, body?.priceSatang);
+  }
+
+  @Post("ip-blocks/:id/price")
+  @HttpCode(200)
+  async setBlockPrice(
+    @Req() req: { user: { email: string } },
+    @Param("id") id: string,
+    @Body() body: { priceSatang: number },
+  ) {
+    return this.overridePrice(req.user.email, "block", id, body?.priceSatang);
   }
 
   // ── credit adjust (replaces SQL admin top-up) ──────────────────

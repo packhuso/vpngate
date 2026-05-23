@@ -152,14 +152,15 @@ export async function buyPublicIp(
     const nextBilling = new Date(Date.now() + 31 * DAY_MS).toISOString();
     await tx`
       INSERT INTO public_ips (ip_address, pool_id, user_id, tunnel_id,
-        status, next_billing_at, allocated_at)
+        status, price_satang, next_billing_at, allocated_at)
       VALUES (${ip}::inet, ${pool.id}, ${userId}, NULL, 'allocated',
-        ${nextBilling}, NOW())
+        ${SINGLE_IP_SATANG}, ${nextBilling}, NOW())
       ON CONFLICT (ip_address) DO UPDATE SET
         user_id = EXCLUDED.user_id,
         tunnel_id = NULL,
         block_id = NULL,
         status = 'allocated',
+        price_satang = EXCLUDED.price_satang,
         next_billing_at = EXCLUDED.next_billing_at,
         allocated_at = NOW(),
         released_at = NULL`;

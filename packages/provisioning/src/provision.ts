@@ -114,10 +114,10 @@ export async function createTunnel(
 
     const [tunnel] = await tx`
       INSERT INTO tunnels (user_id, gateway_id, name, description, protocol,
-        speed_tier, private_ip, wg_public_key, wg_private_key_encrypted, status,
-        next_billing_at)
+        speed_tier, price_satang, private_ip, wg_public_key,
+        wg_private_key_encrypted, status, next_billing_at)
       VALUES (${input.userId}, ${gateway.id}, ${input.name}, ${description},
-        ${protocol}, ${input.speedTier}, ${privateIp}, ${kp.publicKey},
+        ${protocol}, ${input.speedTier}, ${price}, ${privateIp}, ${kp.publicKey},
         ${encPriv}, 'provisioning', ${nextBillingIso})
       RETURNING id`;
     const tunnelId = tunnel.id as string;

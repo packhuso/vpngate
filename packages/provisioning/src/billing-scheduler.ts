@@ -163,19 +163,26 @@ export async function chargeOneTunnel(
       user_id: string;
       name: string;
       speed_tier: SpeedTier;
+      price_satang: string | null;
       status: string;
       next_billing_at: string;
     }[] = await tx`
-      SELECT id, user_id, name, speed_tier, status, next_billing_at
+      SELECT id, user_id, name, speed_tier, price_satang, status, next_billing_at
       FROM tunnels
       WHERE id = ${tunnelId} AND deleted_at IS NULL FOR UPDATE`;
     const t = tRows[0];
     if (!t) return "skipped";
+    // Grandfathered: charge the price locked in at purchase, not the live catalog
+    // price. Fall back to the catalog only if the snapshot is somehow missing.
     let price: number;
-    try {
-      price = await speedTierPrice(t.speed_tier);
-    } catch {
-      return "skipped";
+    if (t.price_satang != null) {
+      price = Number(t.price_satang);
+    } else {
+      try {
+        price = await speedTierPrice(t.speed_tier);
+      } catch {
+        return "skipped";
+      }
     }
 
     const wRows: { id: string; balance_satang: string }[] = await tx`
@@ -223,21 +230,23 @@ export async function chargeOnePublicIp(
   ip: string,
   now: Date = new Date(),
 ): Promise<ChargeOutcome> {
-  const SINGLE_IP_SATANG = await ipPrice(1); // admin-configurable (migration 0010)
   return sql.begin(async (tx: Tx) => {
     const rows: {
       ip_address: string;
       user_id: string | null;
       status: string;
+      price_satang: string | null;
       next_billing_at: string;
       block_id: string | null;
     }[] = await tx`
-      SELECT host(ip_address) AS ip_address, user_id, status,
+      SELECT host(ip_address) AS ip_address, user_id, status, price_satang,
              next_billing_at, block_id
       FROM public_ips
       WHERE ip_address = ${ip}::inet FOR UPDATE`;
     const r = rows[0];
     if (!r || r.block_id || !r.user_id) return "skipped";
+    // Grandfathered price locked at purchase (fallback to catalog if missing).
+    const SINGLE_IP_SATANG = r.price_satang != null ? Number(r.price_satang) : await ipPrice(1);
 
     const wRows: { id: string; balance_satang: string }[] = await tx`
       SELECT id, balance_satang FROM credit_wallets
@@ -297,7 +306,8 @@ export async function chargeOneIpBlock(
       FROM ip_blocks WHERE id = ${blockId} FOR UPDATE`;
     const b = bRows[0];
     if (!b) return "skipped";
-    const price = await ipPrice(b.block_size).catch(() => Number(b.price_satang));
+    // Grandfathered: block price is snapshotted at purchase (ip_blocks.price_satang).
+    const price = b.price_satang != null ? Number(b.price_satang) : await ipPrice(b.block_size);
 
     const wRows: { id: string; balance_satang: string }[] = await tx`
       SELECT id, balance_satang FROM credit_wallets
