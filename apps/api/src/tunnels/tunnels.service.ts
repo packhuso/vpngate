@@ -162,23 +162,31 @@ export class TunnelsService {
       throw new BadRequestException("tunnel is still provisioning, try again in a moment");
     }
 
-    const pubIps = await sql<{ ip: string }[]>`
-      SELECT host(ip_address) AS ip FROM public_ips
-      WHERE tunnel_id = ${tunnelId} AND status = 'allocated'
-      ORDER BY ip_address`;
+    // Single IPs route as /32; a sold block routes as its CIDR (e.g. a /25),
+    // NOT 128 separate /32s — compact, correct, and keeps the config/QR small.
+    const singles = (
+      await sql<{ ip: string }[]>`
+        SELECT host(ip_address) AS ip FROM public_ips
+        WHERE tunnel_id = ${tunnelId} AND block_id IS NULL AND status = 'allocated'
+        ORDER BY ip_address`
+    ).map((r) => r.ip);
+    const blockCidrs = (
+      await sql<{ cidr: string }[]>`
+        SELECT DISTINCT b.block::text AS cidr
+        FROM ip_blocks b JOIN public_ips p ON p.block_id = b.id
+        WHERE p.tunnel_id = ${tunnelId} AND p.status = 'allocated'
+        ORDER BY 1`
+    ).map((r) => r.cidr);
 
     // Client model: wg0 carries ONLY the tunnel-internal private IP. Each
-    // assigned public IP is routed by the gateway to this peer; the customer
-    // adds it to their LOOPBACK to actually use it (bind/listen). This keeps
-    // wg0 minimal and gives the customer explicit control over which traffic
-    // sources from the public IP (via standard policy routing on their side).
-    const allowedIPs = [
-      t.private_subnet,
-      ...pubIps.map((p) => `${p.ip}/32`),
-    ].join(", ");
+    // assigned public IP/block is routed by the gateway to this peer; the
+    // customer adds it to their LOOPBACK to actually use it (bind/listen). This
+    // keeps wg0 minimal and gives the customer explicit control over which
+    // traffic sources from the public IP (via standard policy routing).
+    const routable = [...singles.map((ip) => `${ip}/32`), ...blockCidrs];
+    const allowedIPs = [t.private_subnet, ...routable].join(", ");
 
     const privateKey = decryptSecret(t.wg_private_key_encrypted);
-    const pubIpList = pubIps.map((p) => p.ip);
     const safeName = t.name.replace(/[^A-Za-z0-9_-]/g, "_") || "tunnel";
 
     if (format === "mikrotik") {
@@ -189,7 +197,8 @@ export class TunnelsService {
         endpointPort: t.wg_port,
         privateIp: t.private_ip,
         privateSubnet: t.private_subnet,
-        publicIps: pubIpList,
+        singles,
+        blockCidrs,
       });
       return { filename: `${safeName}.mikrotik.rsc`, conf };
     }
@@ -216,7 +225,8 @@ interface MikrotikArgs {
   endpointPort: number;
   privateIp: string;
   privateSubnet: string;
-  publicIps: string[];
+  singles: string[]; // bare IPs → /32
+  blockCidrs: string[]; // sold blocks → routed as their CIDR
 }
 
 /** RouterOS 7.x script — paste into the Mikrotik terminal (or `/import` the file).
@@ -231,7 +241,9 @@ function buildMikrotikScript(a: MikrotikArgs): string {
   // IP can be decrypted (gateway forwards inbound from arbitrary internet hosts).
   // Routing on the Mikrotik side is controlled separately via /ip/route below
   // (RouterOS does NOT auto-derive routes from allowed-address, unlike wg-quick).
-  const allowed = a.publicIps.length > 0 ? "0.0.0.0/0" : a.privateSubnet;
+  // routable source prefixes the customer owns (singles as /32, blocks as CIDR)
+  const routable = [...a.singles.map((ip) => `${ip}/32`), ...a.blockCidrs];
+  const allowed = routable.length > 0 ? "0.0.0.0/0" : a.privateSubnet;
 
   const wgIface =
     `/interface/wireguard\n` +
@@ -267,18 +279,19 @@ function buildMikrotikScript(a: MikrotikArgs): string {
     `    comment="vpnhub: clamp MSS (PMTUD-safe)"\n` +
     `\n`;
 
-  if (a.publicIps.length === 0) {
+  if (routable.length === 0) {
     return wgIface + wgPeer + privAddr + mssClamp;
   }
 
+  // Hold each owned prefix on the loopback bridge: singles as /32, a sold block
+  // as its CIDR (one line for the whole block instead of N×/32).
   const loBridge =
     `/interface/bridge\n` +
     `add name=${loName}\n` +
     `\n` +
     `/ip/address\n` +
-    a.publicIps
-      .map((ip) => `add interface=${loName} address=${ip}/32\n`)
-      .join("") +
+    a.singles.map((ip) => `add interface=${loName} address=${ip}/32\n`).join("") +
+    a.blockCidrs.map((c) => `add interface=${loName} address=${c}\n`).join("") +
     `\n`;
 
   const polRouting =
@@ -289,11 +302,8 @@ function buildMikrotikScript(a: MikrotikArgs): string {
     `add gateway=${ifName} routing-table=${tableName}\n` +
     `\n` +
     `/routing/rule\n` +
-    a.publicIps
-      .map(
-        (ip) =>
-          `add src-address=${ip}/32 action=lookup table=${tableName}\n`,
-      )
+    routable
+      .map((src) => `add src-address=${src} action=lookup table=${tableName}\n`)
       .join("") +
     `\n`;
   return wgIface + wgPeer + privAddr + loBridge + polRouting + mssClamp;

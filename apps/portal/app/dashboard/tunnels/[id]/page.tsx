@@ -58,6 +58,17 @@ export default async function TunnelDetail({ params }: Params) {
     SELECT host(ip_address) AS ip, block_id::text AS block_id FROM public_ips
     WHERE tunnel_id = ${id} AND status = 'allocated'
     ORDER BY ip_address`;
+  // Sold blocks route as their CIDR (e.g. a /25), not N separate /32s.
+  const blockCidrs = (
+    await sql<{ cidr: string }[]>`
+      SELECT DISTINCT b.block::text AS cidr
+      FROM ip_blocks b JOIN public_ips p ON p.block_id = b.id
+      WHERE p.tunnel_id = ${id} AND p.status = 'allocated'
+      ORDER BY 1`
+  ).map((r) => r.cidr);
+  const singleIps = pubIps.filter((p) => !p.block_id).map((p) => p.ip);
+  // Routable prefixes shown in the config + the IP list (singles/32 + blocks).
+  const routableCidrs = [...singleIps.map((ip) => `${ip}/32`), ...blockCidrs];
 
   const others = await sql<{ id: string; name: string }[]>`
     SELECT id, name FROM tunnels
@@ -79,7 +90,7 @@ export default async function TunnelDetail({ params }: Params) {
   let wgConf: string | null = null;
   let qrDataUrl: string | null = null;
   if (proto === "wireguard" && t.gw_pub) {
-    const allowedIPs = [t.private_subnet, ...pubIps.map((p) => `${p.ip}/32`)].join(", ");
+    const allowedIPs = [t.private_subnet, ...routableCidrs].join(", ");
     const privateKey = decryptSecret(t.wg_private_key_encrypted);
     wgConf =
       `[Interface]\nPrivateKey = ${privateKey}\nAddress = ${t.private_ip}/32\n\n` +
@@ -214,7 +225,7 @@ export default async function TunnelDetail({ params }: Params) {
                 </p>
               ) : (
                 <ul className="mono" style={{ fontSize: 12, marginTop: 6, paddingLeft: 18 }}>
-                  {pubIps.map((p) => <li key={p.ip} style={{ marginBottom: 2 }}>{p.ip}/32</li>)}
+                  {routableCidrs.map((c) => <li key={c} style={{ marginBottom: 2 }}>{c}</li>)}
                 </ul>
               )}
             </div>
