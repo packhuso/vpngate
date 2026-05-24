@@ -6,7 +6,7 @@ interface User {
   id: string; email: string; name: string | null; status: string;
   lastLoginAt: string | null; balanceSatang: number; createdAt: string;
 }
-interface TunnelItem { id: string; name: string; status: string; speed_tier: string; price_satang: number | null; private_ip: string; created_at: string }
+interface TunnelItem { id: string; name: string; status: string; speed_tier: string; price_satang: number | null; private_ip: string; created_at: string; online?: boolean; last_seen_at?: string | null }
 interface IpItem { ip: string; status: string; price_satang: number | null; tunnel_name: string | null }
 interface BlockItem { id: string; cidr: string; block_size: number; price_satang: number | null; status: string }
 interface UserDetail {
@@ -234,7 +234,13 @@ export default function AdminUsers() {
                         <td style={{ fontWeight: 500 }}>{t.name}</td>
                         <td className="mono" style={{ color: "var(--color-text-muted)" }}>{t.private_ip}</td>
                         <td>{t.speed_tier.replace("tier_", "")}</td>
-                        <td><span className={t.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{t.status}</span></td>
+                        <td>
+                          <span className={t.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{t.status}</span>{" "}
+                          <span className={t.online ? "badge badge-success" : "badge badge-neutral"}
+                            title={t.last_seen_at ? `last seen ${new Date(t.last_seen_at).toLocaleString()}` : "no connection yet"}>
+                            {t.online ? "● online" : "○ offline"}
+                          </span>
+                        </td>
                         <td style={{ textAlign: "right" }}>
                           <PriceEditor endpoint={`/v1/admin/tunnels/${t.id}/price`} satang={t.price_satang}
                             onSaved={() => open(selected.user)} />

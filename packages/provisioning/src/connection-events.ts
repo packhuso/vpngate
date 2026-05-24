@@ -102,6 +102,33 @@ export async function getConnectionEvents(
   }));
 }
 
+export interface OnlineStatus {
+  online: boolean;
+  lastSeenAt: Date | null; // time of the latest connect/ip_change
+}
+
+/** Online status per tunnel, derived from the latest connection event:
+ *  latest event = disconnect (or none) → offline; connect/ip_change → online.
+ *  (Events are state-change only, so there's no freshness expiry — a stably
+ *  connected tunnel keeps its last connect event; a disconnect flips it offline.)
+ *  Returns a map keyed by tunnel id; tunnels absent from the map have no events. */
+export async function getOnlineStatus(
+  tunnelIds: string[],
+): Promise<Record<string, OnlineStatus>> {
+  if (tunnelIds.length === 0) return {};
+  const rows = await sql<{ tunnel_id: string; event: string; created_at: Date }[]>`
+    SELECT DISTINCT ON (tunnel_id) tunnel_id, event, created_at
+    FROM connection_events
+    WHERE tunnel_id = ANY(${tunnelIds})
+    ORDER BY tunnel_id, created_at DESC`;
+  const out: Record<string, OnlineStatus> = {};
+  for (const r of rows) {
+    const online = r.event !== "disconnect";
+    out[r.tunnel_id] = { online, lastSeenAt: online ? r.created_at : null };
+  }
+  return out;
+}
+
 /** Retention prune — delete events older than `days` (default 90). */
 export async function pruneConnectionEvents(days = 90): Promise<number> {
   const r = await sql`

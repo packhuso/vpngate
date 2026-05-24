@@ -14,6 +14,8 @@ interface Tunnel {
   privateIp: string;
   createdAt: string;
   publicIps: PubIp[];
+  online?: boolean;
+  lastSeenAt?: string | null;
 }
 
 // name = config-file identifier → letters/digits/-/_ only. Description holds any-language text.
@@ -297,6 +299,10 @@ export default function TunnelsPanel() {
                     {t.protocol === "openvpn" ? "OpenVPN" : t.protocol === "sstp" ? "SSTP" : "WireGuard"}
                   </span>
                   <span className={`badge ${statusBadge(t.status)}`}>{t.status}</span>
+                  <span className={`badge ${t.online ? "badge-success" : "badge-neutral"}`}
+                    title={t.lastSeenAt ? `last seen ${new Date(t.lastSeenAt).toLocaleString()}` : "no connection yet"}>
+                    {t.online ? "● online" : "○ offline"}
+                  </span>
 
                   <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
                     {t.status === "active" && (t.protocol === "openvpn" ? (

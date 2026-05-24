@@ -21,6 +21,7 @@ import {
   getPricing,
   savePricing,
   getConnectionEvents,
+  getOnlineStatus,
   type SavePricingInput,
 } from "@vpnhub/provisioning";
 import { AdminGuard } from "../auth/admin.guard";
@@ -185,11 +186,19 @@ export class AdminController {
       FROM users u JOIN credit_wallets w ON w.user_id = u.id
       WHERE u.id = ${id}`;
     if (!u) throw new BadRequestException("user not found");
-    const tunnels = await sql`
+    const tunnelRows = await sql<
+      { id: string; name: string; status: string; speed_tier: string; price_satang: string | null; private_ip: string; created_at: Date }[]
+    >`
       SELECT id, name, status, speed_tier, price_satang,
              host(private_ip) AS private_ip, created_at
       FROM tunnels WHERE user_id = ${id} AND deleted_at IS NULL
       ORDER BY created_at DESC`;
+    const onlineMap = await getOnlineStatus(tunnelRows.map((t) => t.id));
+    const tunnels = tunnelRows.map((t) => ({
+      ...t,
+      online: onlineMap[t.id]?.online ?? false,
+      last_seen_at: onlineMap[t.id]?.lastSeenAt ?? null,
+    }));
     // Standalone single IPs (block members are billed via their block).
     const ips = await sql`
       SELECT host(p.ip_address) AS ip, p.status, p.price_satang,

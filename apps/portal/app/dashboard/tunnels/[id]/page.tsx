@@ -70,6 +70,12 @@ export default async function TunnelDetail({ params }: Params) {
   // Routable prefixes shown in the config + the IP list (singles/32 + blocks).
   const routableCidrs = [...singleIps.map((ip) => `${ip}/32`), ...blockCidrs];
 
+  // Live online status from the latest connection event (connect/ip_change=online).
+  const [lastEv] = await sql<{ event: string; created_at: Date }[]>`
+    SELECT event, created_at FROM connection_events
+    WHERE tunnel_id = ${id} ORDER BY created_at DESC LIMIT 1`;
+  const isOnline = lastEv ? lastEv.event !== "disconnect" : false;
+
   const others = await sql<{ id: string; name: string }[]>`
     SELECT id, name FROM tunnels
     WHERE user_id = ${sess.userId} AND id <> ${id}
@@ -149,6 +155,9 @@ export default async function TunnelDetail({ params }: Params) {
           <h1 className="page-title">{t.name}</h1>
           <span className={`badge ${protoMeta.badge}`}>{protoMeta.label}</span>
           <span className={`badge ${statusBadge}`}>{t.status}</span>
+          <span className={`badge ${isOnline ? "badge-success" : "badge-neutral"}`}>
+            {isOnline ? "● Online" : "○ Offline"}
+          </span>
         </div>
         {t.description && (
           <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 4 }}>{t.description}</p>

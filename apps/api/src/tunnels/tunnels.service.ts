@@ -12,6 +12,7 @@ import {
   getOvpnMikrotikScript,
   getSstpConfig,
   ensureSstpCredentials,
+  getOnlineStatus,
   type CreateTunnelInput,
 } from "@vpnhub/provisioning";
 import { gatewayQueue } from "./queue";
@@ -92,6 +93,7 @@ export class TunnelsService {
       list.push({ ip: r.ip, blockId: r.block_id });
       byTunnel.set(r.tunnel_id, list);
     }
+    const online = await getOnlineStatus(ids);
     return rows.map((t) => ({
       id: t.id,
       name: t.name,
@@ -102,6 +104,8 @@ export class TunnelsService {
       privateIp: t.private_ip,
       createdAt: t.created_at,
       publicIps: byTunnel.get(t.id) ?? [],
+      online: online[t.id]?.online ?? false,
+      lastSeenAt: online[t.id]?.lastSeenAt ?? null,
     }));
   }
 
