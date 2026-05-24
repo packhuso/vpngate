@@ -41,20 +41,18 @@ function ConnLog({ tunnelId }: { tunnelId: string }) {
       ) : events.length === 0 ? (
         <p style={{ fontSize: 11, color: "var(--color-text-muted)", margin: "4px 0" }}>ยังไม่มี event</p>
       ) : (
-        <table className="mono" style={{ fontSize: 10.5, marginTop: 4, width: "100%" }}>
-          <tbody>
-            {events.map((ev) => (
-              <tr key={ev.id}>
-                <td style={{ color: "var(--color-text-muted)", whiteSpace: "nowrap", paddingRight: 8 }}>
-                  {new Date(ev.createdAt).toISOString().replace("T", " ").slice(5, 19)}
-                </td>
-                <td style={{ color: evColor(ev.event), fontWeight: 600, paddingRight: 8 }}>{ev.event}</td>
-                <td style={{ paddingRight: 8 }}>{ev.clientIp ?? ""}</td>
-                <td style={{ color: "var(--color-text-muted)" }}>{ev.detail ?? ""}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="mono" style={{ fontSize: 11, marginTop: 6, display: "flex", flexDirection: "column", gap: 3, maxHeight: 200, overflowY: "auto" }}>
+          {events.map((ev) => (
+            <div key={ev.id} style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+              <span style={{ color: "var(--color-text-muted)", whiteSpace: "nowrap" }}>
+                {new Date(ev.createdAt).toISOString().replace("T", " ").slice(5, 19)}
+              </span>
+              <span style={{ color: evColor(ev.event), fontWeight: 600, minWidth: 70 }}>{ev.event}</span>
+              <span>{ev.clientIp ?? ""}</span>
+              <span style={{ color: "var(--color-text-muted)" }}>{ev.detail ?? ""}</span>
+            </div>
+          ))}
+        </div>
       )}
     </details>
   );
@@ -221,83 +219,80 @@ export default function AdminUsers() {
 
               {/* Purchased items — locked prices, editable per item (grandfathered) */}
               <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
                   <Cable size={14} strokeWidth={2} /> Tunnels ({selected.tunnels.length})
                 </div>
-                <table className="table-default" style={{ marginTop: 6, fontSize: 13 }}>
-                  <tbody>
-                    {selected.tunnels.length === 0 && (
-                      <tr><td style={{ color: "var(--color-text-muted)", padding: 12, textAlign: "center" }}>ไม่มี tunnel</td></tr>
-                    )}
+                {selected.tunnels.length === 0 ? (
+                  <p style={{ color: "var(--color-text-muted)", fontSize: 12, padding: "8px 0" }}>ไม่มี tunnel</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {selected.tunnels.map((t) => (
-                      <tr key={t.id}>
-                        <td style={{ fontWeight: 500 }}>{t.name}</td>
-                        <td className="mono" style={{ color: "var(--color-text-muted)" }}>{t.private_ip}</td>
-                        <td>{t.speed_tier.replace("tier_", "")}</td>
-                        <td>
-                          <span className={t.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{t.status}</span>{" "}
+                      <div key={t.id} className="card-compact" style={{ padding: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontWeight: 600, fontSize: 13 }}>{t.name}</span>
+                          <span className="mono" style={{ fontSize: 12, color: "var(--color-text-muted)" }}>{t.private_ip}</span>
+                          <span className="badge badge-neutral">{t.speed_tier.replace("tier_", "")}</span>
+                          <span className={t.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{t.status}</span>
                           <span className={t.online ? "badge badge-success" : "badge badge-neutral"}
                             title={t.last_seen_at ? `last seen ${new Date(t.last_seen_at).toLocaleString()}` : "no connection yet"}>
                             {t.online ? "● online" : "○ offline"}
                           </span>
-                        </td>
-                        <td style={{ textAlign: "right" }}>
-                          <PriceEditor endpoint={`/v1/admin/tunnels/${t.id}/price`} satang={t.price_satang}
-                            onSaved={() => open(selected.user)} />
-                          <ConnLog tunnelId={t.id} />
-                        </td>
-                      </tr>
+                          <div style={{ marginLeft: "auto" }}>
+                            <PriceEditor endpoint={`/v1/admin/tunnels/${t.id}/price`} satang={t.price_satang}
+                              onSaved={() => open(selected.user)} />
+                          </div>
+                        </div>
+                        <ConnLog tunnelId={t.id} />
+                      </div>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                )}
               </div>
 
               <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
                   <Globe size={14} strokeWidth={2} /> Public IPs ({selected.ips.length})
                 </div>
-                <table className="table-default" style={{ marginTop: 6, fontSize: 13 }}>
-                  <tbody>
-                    {selected.ips.length === 0 && (
-                      <tr><td style={{ color: "var(--color-text-muted)", padding: 12, textAlign: "center" }}>ไม่มี single IP</td></tr>
-                    )}
+                {selected.ips.length === 0 ? (
+                  <p style={{ color: "var(--color-text-muted)", fontSize: 12, padding: "8px 0" }}>ไม่มี single IP</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {selected.ips.map((p) => (
-                      <tr key={p.ip}>
-                        <td className="mono" style={{ fontWeight: 500 }}>{p.ip}</td>
-                        <td style={{ color: "var(--color-text-muted)" }}>{p.tunnel_name ?? "— unassigned —"}</td>
-                        <td><span className={p.status === "allocated" ? "badge badge-success" : "badge badge-neutral"}>{p.status}</span></td>
-                        <td style={{ textAlign: "right" }}>
+                      <div key={p.ip} className="card-compact" style={{ padding: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>{p.ip}</span>
+                        <span style={{ color: "var(--color-text-muted)", fontSize: 12 }}>{p.tunnel_name ?? "— unassigned —"}</span>
+                        <span className={p.status === "allocated" ? "badge badge-success" : "badge badge-neutral"}>{p.status}</span>
+                        <div style={{ marginLeft: "auto" }}>
                           <PriceEditor endpoint={`/v1/admin/ips/${p.ip}/price`} satang={p.price_satang}
                             onSaved={() => open(selected.user)} />
-                        </td>
-                      </tr>
+                        </div>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                )}
               </div>
 
               <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
                   <Boxes size={14} strokeWidth={2} /> IP Blocks ({selected.blocks.length})
                 </div>
-                <table className="table-default" style={{ marginTop: 6, fontSize: 13 }}>
-                  <tbody>
-                    {selected.blocks.length === 0 && (
-                      <tr><td style={{ color: "var(--color-text-muted)", padding: 12, textAlign: "center" }}>ไม่มี block</td></tr>
-                    )}
+                {selected.blocks.length === 0 ? (
+                  <p style={{ color: "var(--color-text-muted)", fontSize: 12, padding: "8px 0" }}>ไม่มี block</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {selected.blocks.map((b) => (
-                      <tr key={b.id}>
-                        <td className="mono" style={{ fontWeight: 500 }}>{b.cidr}</td>
-                        <td style={{ color: "var(--color-text-muted)" }}>{b.block_size} IPs</td>
-                        <td><span className={b.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{b.status}</span></td>
-                        <td style={{ textAlign: "right" }}>
+                      <div key={b.id} className="card-compact" style={{ padding: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>{b.cidr}</span>
+                        <span style={{ color: "var(--color-text-muted)", fontSize: 12 }}>{b.block_size} IPs</span>
+                        <span className={b.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{b.status}</span>
+                        <div style={{ marginLeft: "auto" }}>
                           <PriceEditor endpoint={`/v1/admin/ip-blocks/${b.id}/price`} satang={b.price_satang}
                             onSaved={() => open(selected.user)} />
-                        </td>
-                      </tr>
+                        </div>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                )}
               </div>
             </div>
           )}
