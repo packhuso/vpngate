@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { fmtDateTime } from "../_lib/datetime";
 import { Plus, Trash2, FileDown, Settings2, Shield, KeyRound, Lock } from "lucide-react";
 import { notifyDataChanged, onDataChanged, confirmIpChange } from "../_components/refresh-bus";
 
@@ -300,7 +301,7 @@ export default function TunnelsPanel() {
                   </span>
                   <span className={`badge ${statusBadge(t.status)}`}>{t.status}</span>
                   <span className={`badge ${t.online ? "badge-success" : "badge-neutral"}`}
-                    title={t.lastSeenAt ? `last seen ${new Date(t.lastSeenAt).toLocaleString()}` : "no connection yet"}>
+                    title={t.lastSeenAt ? `last seen ${fmtDateTime(t.lastSeenAt)}` : "no connection yet"}>
                     {t.online ? "● online" : "○ offline"}
                   </span>
 

@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { fmtLogTime } from "../../_lib/datetime";
 import { Filter, RefreshCw } from "lucide-react";
 
 interface Log {
@@ -52,7 +53,7 @@ export default function AdminAudit() {
             )}
             {logs.map((l) => (
               <tr key={l.id} style={{ color: l.success ? undefined : "var(--color-danger)" }}>
-                <td style={{ color: "var(--color-text-muted)" }}>{new Date(l.created_at).toISOString().slice(5, 19)}</td>
+                <td style={{ color: "var(--color-text-muted)" }}>{fmtLogTime(l.created_at)}</td>
                 <td>
                   <span className={l.actor_type === "admin" ? "badge badge-warning" : l.actor_type === "system" ? "badge badge-neutral" : "badge badge-info"}>{l.actor_type}</span>
                   {l.actor_email && <span style={{ marginLeft: 4, color: "var(--color-text-muted)" }}>{l.actor_email}</span>}

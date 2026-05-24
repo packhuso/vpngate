@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { Search, UserCircle2, Cable, Globe, Boxes, Check } from "lucide-react";
+import { fmtDate, fmtDateTime, fmtLogTime } from "../../_lib/datetime";
 
 interface User {
   id: string; email: string; name: string | null; status: string;
@@ -45,7 +46,7 @@ function ConnLog({ tunnelId }: { tunnelId: string }) {
           {events.map((ev) => (
             <div key={ev.id} style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
               <span style={{ color: "var(--color-text-muted)", whiteSpace: "nowrap" }}>
-                {new Date(ev.createdAt).toISOString().replace("T", " ").slice(5, 19)}
+                {fmtLogTime(ev.createdAt)}
               </span>
               <span style={{ color: evColor(ev.event), fontWeight: 600, minWidth: 70 }}>{ev.event}</span>
               <span>{ev.clientIp ?? ""}</span>
@@ -158,7 +159,7 @@ export default function AdminUsers() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 500, color: "var(--color-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
                     <div className="mono" style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-                      {fmt(u.balanceSatang)} · {u.lastLoginAt ? new Date(u.lastLoginAt).toISOString().slice(0, 10) : "never"}
+                      {fmt(u.balanceSatang)} · {u.lastLoginAt ? fmtDate(u.lastLoginAt) : "never"}
                     </div>
                   </div>
                   <span className={u.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{u.status}</span>
@@ -234,7 +235,7 @@ export default function AdminUsers() {
                           <span className="badge badge-neutral">{t.speed_tier.replace("tier_", "")}</span>
                           <span className={t.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{t.status}</span>
                           <span className={t.online ? "badge badge-success" : "badge badge-neutral"}
-                            title={t.last_seen_at ? `last seen ${new Date(t.last_seen_at).toLocaleString()}` : "no connection yet"}>
+                            title={t.last_seen_at ? `last seen ${fmtDateTime(t.last_seen_at)}` : "no connection yet"}>
                             {t.online ? "● online" : "○ offline"}
                           </span>
                           <div style={{ marginLeft: "auto" }}>

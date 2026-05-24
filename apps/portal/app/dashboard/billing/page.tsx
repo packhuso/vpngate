@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { fmtDate, fmtDateTime } from "../../_lib/datetime";
 import { Wallet, Repeat, Calendar, AlertTriangle, Cable, Globe, Boxes } from "lucide-react";
 
 interface Item {
@@ -35,7 +36,6 @@ interface Tx {
 
 const fmt = (s: number) =>
   `฿${(s / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const fmtDate = (s: string | null) => s ? new Date(s).toISOString().slice(0, 10) : "—";
 const daysFromNow = (s: string | null) => {
   if (!s) return null;
   return Math.ceil((new Date(s).getTime() - Date.now()) / 86_400_000);
@@ -208,7 +208,7 @@ export default function BillingPage() {
             )}
             {txs.map((t) => (
               <tr key={t.id}>
-                <td style={{ color: "var(--color-text-muted)" }}>{new Date(t.createdAt).toISOString().slice(0, 16).replace("T", " ")}</td>
+                <td style={{ color: "var(--color-text-muted)" }}>{fmtDateTime(t.createdAt)}</td>
                 <td style={{ fontSize: 11 }}><span className="badge badge-neutral">{t.type}</span></td>
                 <td>{t.description}</td>
                 <td style={{ textAlign: "right", color: t.amountSatang < 0 ? "var(--color-danger)" : "var(--color-success)", fontWeight: 500 }}>

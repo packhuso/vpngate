@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { fmtDate } from "../../../_lib/datetime";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import QRCode from "qrcode";
@@ -163,7 +164,7 @@ export default async function TunnelDetail({ params }: Params) {
           <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 4 }}>{t.description}</p>
         )}
         <p className="page-subtitle mono" style={{ fontSize: 12 }}>
-          {id} · private {t.private_ip} · {endpoint} · next billing {new Date(t.next_billing_at).toISOString().slice(0, 10)}
+          {id} · private {t.private_ip} · {endpoint} · next billing {fmtDate(t.next_billing_at)}
         </p>
       </div>
 
