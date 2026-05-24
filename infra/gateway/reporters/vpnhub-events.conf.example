@@ -1,0 +1,4 @@
+# /etc/vpnhub-events.conf on each gateway (chmod 600). Source of the ingest URL
+# + shared token for the connection-event reporters (push to control plane).
+INGEST_URL=https://portal.myip.in.th/v1/ingest/connection-events
+INGEST_TOKEN=__SET_FROM_EVENTS_INGEST_TOKEN_IN_DOTENV__

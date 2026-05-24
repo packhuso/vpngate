@@ -20,6 +20,7 @@ import {
   parseCidr,
   getPricing,
   savePricing,
+  getConnectionEvents,
   type SavePricingInput,
 } from "@vpnhub/provisioning";
 import { AdminGuard } from "../auth/admin.guard";
@@ -153,6 +154,15 @@ export class AdminController {
         createdAt: u.created_at,
       })),
     };
+  }
+
+  // GET /v1/admin/tunnels/:id/connection-events — connect/disconnect/ip_change history
+  @Get("tunnels/:id/connection-events")
+  async tunnelConnectionEvents(
+    @Param("id") id: string,
+    @Query("limit") limit?: string,
+  ) {
+    return { events: await getConnectionEvents(id, Number(limit ?? 50)) };
   }
 
   @Get("users/:id")

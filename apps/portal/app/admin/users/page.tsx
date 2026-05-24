@@ -18,6 +18,48 @@ interface UserDetail {
 
 const fmt = (s: number) => `฿${(s / 100).toFixed(2)}`;
 
+interface ConnEvent { id: string; protocol: string; event: string; clientIp: string | null; detail: string | null; createdAt: string }
+
+// Lazy per-tunnel connection log (connect/disconnect/ip_change history).
+function ConnLog({ tunnelId }: { tunnelId: string }) {
+  const [events, setEvents] = useState<ConnEvent[] | null>(null);
+  const evColor = (e: string) =>
+    e === "connect" ? "var(--color-success, #16a34a)"
+    : e === "disconnect" ? "var(--color-danger)"
+    : "var(--color-warning, #d97706)";
+  async function load() {
+    if (events !== null) return;
+    const r = await fetch(`/v1/admin/tunnels/${tunnelId}/connection-events?limit=50`, { credentials: "same-origin" });
+    if (r.ok) setEvents((await r.json()).events ?? []);
+  }
+  return (
+    <details onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) void load(); }}
+      style={{ marginTop: 4 }}>
+      <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--color-primary)" }}>connection log</summary>
+      {events === null ? (
+        <p style={{ fontSize: 11, color: "var(--color-text-muted)", margin: "4px 0" }}>กำลังโหลด…</p>
+      ) : events.length === 0 ? (
+        <p style={{ fontSize: 11, color: "var(--color-text-muted)", margin: "4px 0" }}>ยังไม่มี event</p>
+      ) : (
+        <table className="mono" style={{ fontSize: 10.5, marginTop: 4, width: "100%" }}>
+          <tbody>
+            {events.map((ev) => (
+              <tr key={ev.id}>
+                <td style={{ color: "var(--color-text-muted)", whiteSpace: "nowrap", paddingRight: 8 }}>
+                  {new Date(ev.createdAt).toISOString().replace("T", " ").slice(5, 19)}
+                </td>
+                <td style={{ color: evColor(ev.event), fontWeight: 600, paddingRight: 8 }}>{ev.event}</td>
+                <td style={{ paddingRight: 8 }}>{ev.clientIp ?? ""}</td>
+                <td style={{ color: "var(--color-text-muted)" }}>{ev.detail ?? ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </details>
+  );
+}
+
 // Inline locked-price editor for one purchased item.
 function PriceEditor({ endpoint, satang, onSaved }: { endpoint: string; satang: number | null; onSaved: () => void }) {
   const [val, setVal] = useState((Number(satang ?? 0) / 100).toString());
@@ -196,6 +238,7 @@ export default function AdminUsers() {
                         <td style={{ textAlign: "right" }}>
                           <PriceEditor endpoint={`/v1/admin/tunnels/${t.id}/price`} satang={t.price_satang}
                             onSaved={() => open(selected.user)} />
+                          <ConnLog tunnelId={t.id} />
                         </td>
                       </tr>
                     ))}

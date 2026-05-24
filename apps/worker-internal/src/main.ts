@@ -1,9 +1,15 @@
 // VPN Hub — internal worker (design §7.3 billing + §7.1 drift detection).
 import { Worker, type Processor } from "bullmq";
 import IORedis from "ioredis";
-import { reconcileAllGateways, runBillingTick } from "@vpnhub/provisioning";
+import {
+  reconcileAllGateways,
+  runBillingTick,
+  pruneConnectionEvents,
+} from "@vpnhub/provisioning";
 
 const QUEUE = "internal";
+const CONN_PRUNE_EVERY_MS = 24 * 60 * 60 * 1000; // daily
+const CONN_RETENTION_DAYS = Number(process.env.CONN_RETENTION_DAYS ?? 90);
 const DRIFT_EVERY_MS = Number(process.env.DRIFT_INTERVAL_MS ?? 10 * 60 * 1000);
 const DRIFT_STARTUP_DELAY_MS = 5_000; // give the rest of the stack a moment
 const BILLING_EVERY_MS = Number(
@@ -118,9 +124,23 @@ async function main() {
       `(startup +${(BILLING_STARTUP_DELAY_MS / 1000) | 0}s)`,
   );
 
+  // Connection-events retention prune — daily.
+  const pruneConn = async () => {
+    try {
+      const n = await pruneConnectionEvents(CONN_RETENTION_DAYS);
+      if (n > 0) console.log(`[conn-prune] removed ${n} events older than ${CONN_RETENTION_DAYS}d`);
+    } catch (e) {
+      console.error("[conn-prune] FAILED:", (e as Error).message);
+    }
+  };
+  setTimeout(() => void pruneConn(), 60_000);
+  const connPruneTimer = setInterval(() => void pruneConn(), CONN_PRUNE_EVERY_MS);
+  console.log(`[conn-prune] scheduled daily (retention ${CONN_RETENTION_DAYS}d)`);
+
   const shutdown = async () => {
     clearInterval(driftTimer);
     clearInterval(billingTimer);
+    clearInterval(connPruneTimer);
     await worker.close();
     connection.disconnect();
     process.exit(0);

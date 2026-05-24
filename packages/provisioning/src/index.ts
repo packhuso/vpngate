@@ -10,6 +10,7 @@ export * from "./notify";
 export * from "./ovpn-config";
 export * from "./sstp-config";
 export * from "./pricing";
+export * from "./connection-events";
 export {
   cidrContains,
   cidrsOverlap,
