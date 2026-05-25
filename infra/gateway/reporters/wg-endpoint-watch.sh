@@ -20,26 +20,25 @@ post() { # $1=pk $2=event $3=ip $4=detail
 
 printf '%s\n' "$eps" | while read -r pk ep; do
   [ -n "$pk" ] || continue
+  case "$ep" in ""|"(none)") continue;; esac
   he=$(printf '%s\n' "$hs" | awk -v k="$pk" '$1==k{print $2}'); [ -z "$he" ] && he=0
   fresh=0; [ "$he" -gt 0 ] 2>/dev/null && [ $((now - he)) -lt $FRESH_SECS ] && fresh=1
   prev=$(printf '%s\n' "$old" | awk -v k="$pk" '$1==k{print $2" "$3}')
   pep=$(printf '%s' "$prev" | awk '{print $1}'); pf=$(printf '%s' "$prev" | awk '{print $2}')
-  ip=$(printf %s "$ep" | sed 's/:[0-9]*$//'); [ "$ep" = "(none)" ] && ip=""
-  # connect/disconnect on fresh transition (skip if no prior fresh info = upgrade)
-  if [ -n "$pf" ] && [ "$pf" != "$fresh" ]; then
-    if [ "$fresh" = "1" ]; then
-      printf '%s peer %s  connect %s\n' "$(date '+%F %T')" "$(printf %s "$pk"|cut -c1-10)" "$ep" >> "$LOG"
-      post "$pk" connect "$ip" ""
-    else
-      printf '%s peer %s  disconnect\n' "$(date '+%F %T')" "$(printf %s "$pk"|cut -c1-10)" >> "$LOG"
-      post "$pk" disconnect "" ""
-    fi
-  elif [ "$fresh" = "1" ] && [ -n "$pep" ] && [ "$pep" != "$ep" ] && [ "$ep" != "(none)" ]; then
+  ip=$(printf %s "$ep" | sed 's/:[0-9]*$//')
+  # connect: fresh now and was NOT fresh before (covers unknown/upgrade/reboot =
+  # seeds currently-online peers). disconnect: was fresh, now stale.
+  if [ "$fresh" = "1" ] && [ "$pf" != "1" ]; then
+    printf '%s peer %s  connect %s\n' "$(date '+%F %T')" "$(printf %s "$pk"|cut -c1-10)" "$ep" >> "$LOG"
+    post "$pk" connect "$ip" ""
+  elif [ "$fresh" = "0" ] && [ "$pf" = "1" ]; then
+    printf '%s peer %s  disconnect\n' "$(date '+%F %T')" "$(printf %s "$pk"|cut -c1-10)" >> "$LOG"
+    post "$pk" disconnect "" ""
+  elif [ "$fresh" = "1" ] && [ -n "$pep" ] && [ "$pep" != "$ep" ]; then
     printf '%s peer %s  %s -> %s\n' "$(date '+%F %T')" "$(printf %s "$pk"|cut -c1-10)" "$pep" "$ep" >> "$LOG"
     post "$pk" ip_change "$ip" "$pep -> $ep"
   fi
 done
-# rebuild state
 {
   printf '%s\n' "$eps" | while read -r pk ep; do
     [ -n "$pk" ] || continue
