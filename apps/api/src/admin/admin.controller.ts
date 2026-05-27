@@ -22,6 +22,8 @@ import {
   savePricing,
   getConnectionEvents,
   getOnlineStatus,
+  adminGrantIp,
+  adminGrantBlock,
   type SavePricingInput,
 } from "@vpnhub/provisioning";
 import { AdminGuard } from "../auth/admin.guard";
@@ -305,6 +307,46 @@ export class AdminController {
     @Body() body: { priceSatang: number },
   ) {
     return this.overridePrice(req.user.email, "block", id, body?.priceSatang);
+  }
+
+  // ── admin grant: give a specific IP/block from a pool to a customer ──
+  // Free (no wallet charge); priceSatang = recurring cost (0 = free forever).
+  private async adminId(email: string): Promise<string | null> {
+    const [a] = await sql<{ id: string }[]>`
+      SELECT id FROM admin_users WHERE lower(email)=lower(${email}) AND active=true`;
+    return a?.id ?? null;
+  }
+
+  @Post("ips/grant-single")
+  @HttpCode(200)
+  async grantSingle(
+    @Req() req: { user: { email: string } },
+    @Body() body: { userId: string; ip: string; priceSatang: number },
+  ) {
+    try {
+      return await adminGrantIp({
+        userId: body?.userId, ip: body?.ip, priceSatang: body?.priceSatang,
+        adminId: await this.adminId(req.user.email),
+      });
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  @Post("ips/grant-block")
+  @HttpCode(200)
+  async grantBlock(
+    @Req() req: { user: { email: string } },
+    @Body() body: { userId: string; cidr: string; priceSatang: number },
+  ) {
+    try {
+      return await adminGrantBlock({
+        userId: body?.userId, cidr: body?.cidr, priceSatang: body?.priceSatang,
+        adminId: await this.adminId(req.user.email),
+      });
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
   }
 
   // ── credit adjust (replaces SQL admin top-up) ──────────────────

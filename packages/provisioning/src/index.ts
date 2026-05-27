@@ -11,6 +11,7 @@ export * from "./ovpn-config";
 export * from "./sstp-config";
 export * from "./pricing";
 export * from "./connection-events";
+export * from "./admin-grant";
 export {
   cidrContains,
   cidrsOverlap,

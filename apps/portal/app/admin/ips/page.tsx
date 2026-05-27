@@ -50,6 +50,8 @@ const SALE_SIZES = [
 
 const ip4ToInt = (ip: string): number =>
   ip.split(".").reduce((n, o) => (n << 8) + Number(o), 0) >>> 0;
+const intToIp4 = (n: number): string =>
+  [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
 const cidrParts = (cidr: string) => {
   const [base, lenStr] = cidr.split("/");
   return { net: ip4ToInt(base), size: 1 << (32 - Number(lenStr)), prefix: Number(lenStr) };
@@ -74,6 +76,19 @@ export default function AdminIps() {
   const [poolErr, setPoolErr] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
+
+  // Grant (assign an available IP/block to a customer) state
+  const [priceMap, setPriceMap] = useState<Record<number, number>>({});
+  type GrantTarget =
+    | { kind: "single"; ip: string }
+    | { kind: "block"; cidr: string; size: number };
+  const [grant, setGrant] = useState<GrantTarget | null>(null);
+  const [gQuery, setGQuery] = useState("");
+  const [gUsers, setGUsers] = useState<{ id: string; email: string; name: string | null }[]>([]);
+  const [gUser, setGUser] = useState<{ id: string; email: string } | null>(null);
+  const [gPriceBaht, setGPriceBaht] = useState("");
+  const [gErr, setGErr] = useState<string | null>(null);
+  const [gBusy, setGBusy] = useState(false);
 
   const loadPools = useCallback(async () => {
     const r = await fetch("/v1/admin/ips/pools", { credentials: "same-origin" });
@@ -153,6 +168,61 @@ export default function AdminIps() {
   }, [poolId]);
   useEffect(() => { void loadPlans(); void loadIps(); }, [loadPlans, loadIps]);
 
+  // default recurring price per block size (catalog) for the grant panel prefill
+  useEffect(() => {
+    void (async () => {
+      const r = await fetch("/v1/billing/pricing", { credentials: "same-origin" });
+      if (!r.ok) return;
+      const d = await r.json();
+      const m: Record<number, number> = {};
+      for (const it of d.ip ?? []) m[it.blockSize] = it.priceSatang;
+      setPriceMap(m);
+    })();
+  }, []);
+
+  // customer search (debounced) — only while the grant panel is open
+  useEffect(() => {
+    if (!grant) return;
+    const q = gQuery.trim();
+    const t = setTimeout(async () => {
+      const r = await fetch(`/v1/admin/users?q=${encodeURIComponent(q)}`, { credentials: "same-origin" });
+      if (r.ok) setGUsers((await r.json()).users ?? []);
+    }, 250);
+    return () => clearTimeout(t);
+  }, [gQuery, grant]);
+
+  function openGrant(t: GrantTarget) {
+    const size = t.kind === "block" ? t.size : 1;
+    const def = priceMap[size] ?? 0;
+    setGrant(t);
+    setGUser(null); setGQuery(""); setGUsers([]); setGErr(null);
+    setGPriceBaht((def / 100).toFixed(2));
+  }
+
+  async function submitGrant(e: React.FormEvent) {
+    e.preventDefault();
+    if (!grant || !gUser) { setGErr("เลือกลูกค้าก่อน"); return; }
+    const priceSatang = Math.round(parseFloat(gPriceBaht || "0") * 100);
+    if (!Number.isFinite(priceSatang) || priceSatang < 0) { setGErr("ราคาไม่ถูกต้อง"); return; }
+    setGBusy(true); setGErr(null);
+    try {
+      const url = grant.kind === "single" ? "/v1/admin/ips/grant-single" : "/v1/admin/ips/grant-block";
+      const body = grant.kind === "single"
+        ? { userId: gUser.id, ip: grant.ip, priceSatang }
+        : { userId: gUser.id, cidr: grant.cidr, priceSatang };
+      const r = await fetch(url, {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.message?.message ?? j?.message ?? "failed");
+      setGrant(null);
+      await Promise.all([loadIps(), loadPools()]);
+    } catch (e) { setGErr((e as Error).message); }
+    finally { setGBusy(false); }
+  }
+
   async function addPlan(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setPlanErr(null);
     try {
@@ -211,6 +281,37 @@ export default function AdminIps() {
   }
 
   const currentPool = pools.find((p) => p.id === poolId);
+
+  // Collapse block-plan ranges into ONE card; single/no-plan IPs stay per-/32.
+  type Card =
+    | { kind: "single"; key: string; ip: string; row: IpRow }
+    | { kind: "block"; key: string; cidr: string; size: number; available: boolean; owner: string | null };
+  const cards: Card[] = [];
+  {
+    const sorted = [...ips].sort((a, b) => ip4ToInt(a.ip) - ip4ToInt(b.ip));
+    const blockGroups = new Map<string, IpRow[]>();
+    for (const r of sorted) {
+      if (r.plan_mode === "block" && r.plan_block_size) {
+        const size = r.plan_block_size;
+        const n = ip4ToInt(r.ip);
+        const start = n - (n % size);
+        const cidr = `${intToIp4(start)}/${32 - Math.log2(size)}`;
+        const arr = blockGroups.get(cidr) ?? [];
+        arr.push(r); blockGroups.set(cidr, arr);
+      } else {
+        cards.push({ kind: "single", key: r.ip, ip: r.ip, row: r });
+      }
+    }
+    for (const [cidr, members] of blockGroups) {
+      const size = members[0].plan_block_size ?? members.length;
+      const owner = members.find((m) => m.user_email)?.user_email ?? null;
+      const available = members.every((m) => m.status === "available" && !m.user_email);
+      cards.push({ kind: "block", key: cidr, cidr, size, available, owner });
+    }
+    cards.sort((a, b) =>
+      ip4ToInt(a.kind === "single" ? a.ip : a.cidr.split("/")[0]) -
+      ip4ToInt(b.kind === "single" ? b.ip : b.cidr.split("/")[0]));
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -345,31 +446,49 @@ export default function AdminIps() {
       <div className="card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 }}>
           <h2 className="section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Globe size={18} strokeWidth={2} /> IPs in pool <span style={{ fontWeight: 400, color: "var(--color-text-muted)" }}>({ips.length})</span>
+            <Globe size={18} strokeWidth={2} /> IPs in pool <span style={{ fontWeight: 400, color: "var(--color-text-muted)" }}>({cards.length})</span>
           </h2>
           <span style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-            ทุก /32 ในพูลแสดงครบ — สีพื้นบอก plan, สถานะรายตัวอยู่ใต้ IP
+            ช่วงที่ขายยก Block รวมเป็นการ์ดเดียว · คลิกรายการที่ว่าง (available) เพื่อเพิ่มให้ลูกค้า
           </span>
         </div>
-        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 6 }}>
-          {ips.map((r) => {
+        <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))", gap: 6 }}>
+          {cards.map((c) => {
+            if (c.kind === "block") {
+              const grantable = c.available;
+              return (
+                <div key={c.key} className="mono"
+                  onClick={grantable ? () => openGrant({ kind: "block", cidr: c.cidr, size: c.size }) : undefined}
+                  style={{ padding: 8, borderRadius: 6, border: "1px solid var(--color-primary)", background: "color-mix(in srgb, var(--color-primary) 8%, transparent)", fontSize: 12, cursor: grantable ? "pointer" : "default" }}
+                  title={`${c.cidr} (IP Block, ${c.size} IPs)\n${c.owner ? "owner: " + c.owner : grantable ? "available — คลิกเพื่อเพิ่มให้ลูกค้า" : "ใช้งานบางส่วน"}`}>
+                  <div style={{ fontWeight: 600 }}>{c.cidr}</div>
+                  <div style={{ display: "flex", gap: 4, marginTop: 4, alignItems: "center", fontSize: 10, color: "var(--color-text-muted)" }}>
+                    <Layers size={11} />
+                    <span>{c.size} IPs</span>
+                    <span style={{ marginLeft: "auto", fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {c.owner ? c.owner : grantable ? "+ เพิ่มให้ลูกค้า" : "ใช้บางส่วน"}
+                    </span>
+                  </div>
+                </div>
+              );
+            }
+            const r = c.row;
             const statusColor = STATUS_COLOR[r.status] ?? "var(--color-text-subtle)";
             const planBg = r.plan_mode === "single"
               ? "color-mix(in srgb, var(--color-success) 8%, transparent)"
-              : r.plan_mode === "block"
-              ? "color-mix(in srgb, var(--color-primary) 8%, transparent)"
               : "var(--color-surface)";
-            const planLabel = r.plan_mode === "block"
-              ? `IP Block /${32 - Math.log2(r.plan_block_size ?? 1)}`
-              : r.plan_mode === "single" ? "/32" : "no plan";
+            const planLabel = r.plan_mode === "single" ? "/32" : "no plan";
+            const grantable = r.status === "available" && !r.user_email;
             return (
-              <div key={r.ip} className="mono" style={{ padding: 8, borderRadius: 6, border: "1px solid var(--color-border)", background: planBg, fontSize: 12 }}
-                title={`${r.ip}\nplan: ${planLabel}\nstatus: ${r.status}${r.user_email ? "\nowner: " + r.user_email : ""}${r.tunnel_name ? "\ntunnel: " + r.tunnel_name : ""}`}>
+              <div key={c.key} className="mono"
+                onClick={grantable ? () => openGrant({ kind: "single", ip: r.ip }) : undefined}
+                style={{ padding: 8, borderRadius: 6, border: "1px solid var(--color-border)", background: planBg, fontSize: 12, cursor: grantable ? "pointer" : "default" }}
+                title={`${r.ip}\nplan: ${planLabel}\nstatus: ${r.status}${r.user_email ? "\nowner: " + r.user_email : grantable ? "\nคลิกเพื่อเพิ่มให้ลูกค้า" : ""}${r.tunnel_name ? "\ntunnel: " + r.tunnel_name : ""}`}>
                 <div style={{ fontWeight: 500 }}>{r.ip}</div>
                 <div style={{ display: "flex", gap: 4, marginTop: 4, alignItems: "center", fontSize: 10, color: "var(--color-text-muted)" }}>
                   <span style={{ width: 6, height: 6, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
                   <span>{r.status}</span>
-                  <span style={{ marginLeft: "auto", fontSize: 9 }}>{planLabel}</span>
+                  <span style={{ marginLeft: "auto", fontSize: 9 }}>{grantable ? "+ เพิ่ม" : planLabel}</span>
                 </div>
               </div>
             );
@@ -377,10 +496,68 @@ export default function AdminIps() {
         </div>
         <p style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 12 }}>
           <span style={{ display: "inline-block", width: 10, height: 10, background: "color-mix(in srgb, var(--color-success) 30%, transparent)", borderRadius: 2, marginRight: 4, verticalAlign: "middle" }} /> ขาย /32 &nbsp;
-          <span style={{ display: "inline-block", width: 10, height: 10, background: "color-mix(in srgb, var(--color-primary) 30%, transparent)", borderRadius: 2, marginRight: 4, marginLeft: 8, verticalAlign: "middle" }} /> ขาย IP Block &nbsp;
+          <span style={{ display: "inline-block", width: 10, height: 10, background: "color-mix(in srgb, var(--color-primary) 30%, transparent)", borderRadius: 2, marginRight: 4, marginLeft: 8, verticalAlign: "middle" }} /> ขาย IP Block (รวมเป็นการ์ด) &nbsp;
           <span style={{ display: "inline-block", width: 10, height: 10, background: "var(--color-surface-2)", borderRadius: 2, marginRight: 4, marginLeft: 8, verticalAlign: "middle" }} /> ไม่มี plan ครอบ
         </p>
       </div>
+
+      {/* Grant panel — assign an available IP/block to a customer (free, owned-unassigned) */}
+      {grant && (
+        <div onClick={() => !gBusy && setGrant(null)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "grid", placeItems: "center", zIndex: 50, padding: 16 }}>
+          <div onClick={(e) => e.stopPropagation()} className="card" style={{ width: "min(440px, 100%)", maxHeight: "90vh", overflow: "auto" }}>
+            <h2 className="section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Plus size={18} strokeWidth={2} /> เพิ่ม {grant.kind === "block" ? "Block" : "IP"} ให้ลูกค้า
+            </h2>
+            <p className="mono" style={{ fontSize: 15, fontWeight: 600, marginTop: 8 }}>
+              {grant.kind === "block" ? `${grant.cidr} (${grant.size} IPs)` : grant.ip}
+            </p>
+            <form onSubmit={submitGrant} style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <label style={{ fontSize: 12, color: "var(--color-text-muted)" }}>ลูกค้า</label>
+                {gUser ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                    <span className="badge badge-success">{gUser.email}</span>
+                    <button type="button" className="btn btn-sm" onClick={() => setGUser(null)}>เปลี่ยน</button>
+                  </div>
+                ) : (
+                  <>
+                    <input className="input" style={{ marginTop: 4 }} placeholder="ค้นหา email / ชื่อ"
+                      value={gQuery} onChange={(e) => setGQuery(e.target.value)} autoFocus />
+                    {gUsers.length > 0 && (
+                      <div style={{ marginTop: 4, border: "1px solid var(--color-border)", borderRadius: 8, maxHeight: 180, overflow: "auto" }}>
+                        {gUsers.map((u) => (
+                          <button key={u.id} type="button"
+                            onClick={() => { setGUser({ id: u.id, email: u.email }); setGUsers([]); }}
+                            style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 10px", background: "none", border: "none", borderBottom: "1px solid var(--color-border)", cursor: "pointer", fontSize: 13 }}>
+                            <div style={{ fontWeight: 500 }}>{u.email}</div>
+                            {u.name && <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>{u.name}</div>}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              <div>
+                <label style={{ fontSize: 12, color: "var(--color-text-muted)" }}>ราคา/รอบ (฿)</label>
+                <input className="input" type="number" step="0.01" min="0" style={{ marginTop: 4 }}
+                  value={gPriceBaht} onChange={(e) => setGPriceBaht(e.target.value)} />
+              </div>
+              {gErr && <p style={{ color: "var(--color-danger)", fontSize: 12 }}>⚠ {gErr}</p>}
+              <p style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                แถมฟรี (ไม่ตัด wallet) · ราคา = ค่าเช่ารอบถัดไป (อีก 31 วัน) · 0 = ฟรีถาวร
+              </p>
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button type="button" className="btn" disabled={gBusy} onClick={() => setGrant(null)}>ยกเลิก</button>
+                <button type="submit" className="btn btn-primary" disabled={gBusy || !gUser}>
+                  {gBusy ? "กำลังเพิ่ม…" : "เพิ่มให้ลูกค้า"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
