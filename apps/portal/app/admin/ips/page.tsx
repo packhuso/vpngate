@@ -180,10 +180,12 @@ export default function AdminIps() {
     })();
   }, []);
 
-  // customer search (debounced) — only while the grant panel is open
+  // customer search (debounced autocomplete) — only after the admin types, so a
+  // large user base doesn't flood the panel before a query is entered.
   useEffect(() => {
     if (!grant) return;
     const q = gQuery.trim();
+    if (q.length < 2) { setGUsers([]); return; }
     const t = setTimeout(async () => {
       const r = await fetch(`/v1/admin/users?q=${encodeURIComponent(q)}`, { credentials: "same-origin" });
       if (r.ok) setGUsers((await r.json()).users ?? []);
@@ -522,8 +524,11 @@ export default function AdminIps() {
                   </div>
                 ) : (
                   <>
-                    <input className="input" style={{ marginTop: 4 }} placeholder="ค้นหา email / ชื่อ"
+                    <input className="input" style={{ marginTop: 4 }} placeholder="พิมพ์ email / ชื่อ เพื่อค้นหา…"
                       value={gQuery} onChange={(e) => setGQuery(e.target.value)} autoFocus />
+                    {gQuery.trim().length >= 2 && gUsers.length === 0 && (
+                      <p style={{ marginTop: 4, fontSize: 11, color: "var(--color-text-muted)" }}>ไม่พบลูกค้าที่ตรงกับ &quot;{gQuery.trim()}&quot;</p>
+                    )}
                     {gUsers.length > 0 && (
                       <div style={{ marginTop: 4, border: "1px solid var(--color-border)", borderRadius: 8, maxHeight: 180, overflow: "auto" }}>
                         {gUsers.map((u) => (
