@@ -13,9 +13,12 @@ old=""; [ -f "$STATE" ] && old=$(cat "$STATE")
 
 post() { # $1=pk $2=event $3=ip $4=detail
   [ -n "$INGEST_URL" ] && [ -n "$INGEST_TOKEN" ] || return 0
+  # Run curl SYNC (not backgrounded): the script runs in a `printf | while` pipe
+  # subshell, so backgrounded curls would be orphaned and SIGTERM'd when
+  # systemd reaps the cgroup. Bounded by -m 5 so the loop can't hang.
   curl -s -m 5 -o /dev/null -X POST "$INGEST_URL" \
     -H "Authorization: Bearer $INGEST_TOKEN" -H "Content-Type: application/json" \
-    -d "{\"events\":[{\"protocol\":\"wireguard\",\"peerKey\":\"$1\",\"event\":\"$2\",\"clientIp\":\"$3\",\"detail\":\"$4\"}]}" 2>/dev/null &
+    -d "{\"events\":[{\"protocol\":\"wireguard\",\"peerKey\":\"$1\",\"event\":\"$2\",\"clientIp\":\"$3\",\"detail\":\"$4\"}]}" 2>/dev/null
 }
 
 printf '%s\n' "$eps" | while read -r pk ep; do
