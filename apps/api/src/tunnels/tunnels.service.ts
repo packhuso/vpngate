@@ -16,6 +16,7 @@ import {
   type CreateTunnelInput,
 } from "@vpnhub/provisioning";
 import { gatewayQueue } from "./queue";
+import { pingOne } from "./ping";
 
 @Injectable()
 export class TunnelsService {
@@ -114,6 +115,33 @@ export class TunnelsService {
   // first call. Lets the portal show creds on first page load (no .rsc click).
   async sstpCredentials(userId: string, tunnelId: string) {
     return ensureSstpCredentials(userId, tunnelId);
+  }
+
+  // Server-side connectivity test: ICMP-ping each of the tunnel's allocated
+  // public IPs from the API host. Targets come from DB (never user input) —
+  // singles individually, plus one representative per block, capped at 8.
+  async pingTunnel(userId: string, tunnelId: string) {
+    const [t] = await sql<{ id: string }[]>`
+      SELECT id FROM tunnels
+      WHERE id = ${tunnelId} AND user_id = ${userId} AND deleted_at IS NULL`;
+    if (!t) throw new Error("tunnel not found");
+    const ips = await sql<{ ip: string; block_id: string | null }[]>`
+      SELECT host(ip_address) AS ip, block_id::text AS block_id
+      FROM public_ips
+      WHERE tunnel_id = ${tunnelId} AND status = 'allocated'
+      ORDER BY ip_address`;
+    const seenBlocks = new Set<string>();
+    const targets: string[] = [];
+    for (const r of ips) {
+      if (r.block_id) {
+        if (seenBlocks.has(r.block_id)) continue;
+        seenBlocks.add(r.block_id);
+      }
+      targets.push(r.ip);
+      if (targets.length >= 8) break;
+    }
+    const results = await Promise.all(targets.map((ip) => pingOne(ip)));
+    return { results };
   }
 
   // Private key is decrypted on demand only (encrypted at rest, design §6.5).

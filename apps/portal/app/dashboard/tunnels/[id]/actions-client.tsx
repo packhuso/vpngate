@@ -1,7 +1,17 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRightLeft, AlertTriangle, Trash2 } from "lucide-react";
+import { ArrowRightLeft, AlertTriangle, Trash2, Radar } from "lucide-react";
+
+interface PingResult {
+  ip: string;
+  transmitted: number;
+  received: number;
+  lossPct: number;
+  minMs: number | null;
+  avgMs: number | null;
+  maxMs: number | null;
+}
 
 interface PubIp { ip: string; blockId: string | null }
 interface OtherTunnel { id: string; name: string }
@@ -16,6 +26,28 @@ export default function TunnelActions({ tunnelId, tunnelName, publicIps, others 
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [pingBusy, setPingBusy] = useState(false);
+  const [pingErr, setPingErr] = useState<string | null>(null);
+  const [pingResults, setPingResults] = useState<PingResult[] | null>(null);
+
+  async function runPing() {
+    setPingBusy(true); setPingErr(null);
+    try {
+      const r = await fetch(`/v1/tunnels/${tunnelId}/ping`, {
+        method: "POST", credentials: "same-origin",
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.message?.message ?? j?.message ?? "ping failed");
+      setPingResults(j.results ?? []);
+    } catch (e) { setPingErr((e as Error).message); }
+    finally { setPingBusy(false); }
+  }
+
+  const lossColor = (loss: number) =>
+    loss === 0 ? "var(--color-success)"
+    : loss >= 100 ? "var(--color-danger)"
+    : loss > 50 ? "var(--color-danger)"
+    : "var(--color-warning)";
 
   type Group =
     | { kind: "single"; ip: string }
@@ -113,6 +145,42 @@ export default function TunnelActions({ tunnelId, tunnelName, publicIps, others 
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {publicIps.length > 0 && (
+        <div className="card">
+          <h2 className="section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Radar size={18} strokeWidth={2} /> ทดสอบการเชื่อมต่อ (Ping)
+          </h2>
+          <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 2 }}>
+            ping จากเซิร์ฟเวอร์ของเราไป public IP ของ tunnel — บอกว่า route ปกติและ peer ออนไลน์ไหม
+          </p>
+          <button onClick={runPing} disabled={pingBusy} className="btn btn-primary" style={{ marginTop: 12 }}>
+            <Radar size={16} />{pingBusy ? "กำลังทดสอบ…" : "ทดสอบ ping"}
+          </button>
+          {pingErr && <p style={{ color: "var(--color-danger)", fontSize: 12, marginTop: 8 }}>⚠ {pingErr}</p>}
+          {pingResults && pingResults.length > 0 && (
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+              {pingResults.map((r) => (
+                <div key={r.ip} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 13 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: lossColor(r.lossPct), flexShrink: 0 }} />
+                  <span className="mono" style={{ flex: 1 }}>{r.ip}</span>
+                  <span style={{ color: "var(--color-text-muted)", fontSize: 12 }}>
+                    {r.avgMs !== null ? (
+                      <>avg <strong style={{ color: "var(--color-text)" }}>{r.avgMs.toFixed(1)} ms</strong></>
+                    ) : (
+                      <span style={{ color: "var(--color-danger)" }}>ไม่ตอบ</span>
+                    )}
+                    {" · "}loss {r.lossPct}% ({r.received}/{r.transmitted})
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {pingResults && pingResults.length === 0 && (
+            <p style={{ fontSize: 12, color: "var(--color-text-muted)", marginTop: 8 }}>ไม่มี IP ให้ทดสอบ</p>
+          )}
         </div>
       )}
 

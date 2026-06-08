@@ -122,6 +122,21 @@ export class TunnelsController {
     }
   }
 
+  // POST /v1/tunnels/:id/ping — server-side ICMP ping to each allocated public
+  // IP (singles + one rep per block, capped at 8). Returns avg ms / loss %.
+  @Post(":id/ping")
+  @HttpCode(200)
+  async ping(
+    @Req() req: { user: { userId: string } },
+    @Param("id") id: string,
+  ) {
+    try {
+      return await this.tunnels.pingTunnel(req.user.userId, id);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
   // DELETE /v1/tunnels/:id — releases public IPs (no refund), removes peer.
   @Delete(":id")
   async remove(
