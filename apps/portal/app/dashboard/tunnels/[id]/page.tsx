@@ -246,6 +246,7 @@ export default async function TunnelDetail({ params }: Params) {
       <TunnelActions
         tunnelId={id}
         tunnelName={t.name}
+        privateIp={t.private_ip}
         publicIps={pubIps.map((p) => ({ ip: p.ip, blockId: p.block_id }))}
         others={others}
       />

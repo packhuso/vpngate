@@ -122,16 +122,18 @@ export class TunnelsController {
     }
   }
 
-  // POST /v1/tunnels/:id/ping — server-side ICMP ping to each allocated public
-  // IP (singles + one rep per block, capped at 8). Returns avg ms / loss %.
+  // POST /v1/tunnels/:id/ping?count=N — gateway pings the peer's private IP.
+  // count = 1..10 (default 4); 1-packet pings let the portal animate live.
   @Post(":id/ping")
   @HttpCode(200)
   async ping(
-    @Req() req: { user: { userId: string } },
+    @Req() req: { user: { userId: string } } & { query: { count?: string } },
     @Param("id") id: string,
   ) {
+    const c = Number(req.query?.count);
+    const count = Number.isFinite(c) && c > 0 ? Math.min(Math.floor(c), 10) : undefined;
     try {
-      return await this.tunnels.pingTunnel(req.user.userId, id);
+      return await this.tunnels.pingTunnel(req.user.userId, id, count);
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     }

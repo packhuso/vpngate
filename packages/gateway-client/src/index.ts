@@ -202,8 +202,9 @@ export class GatewayClient {
     );
   }
   /** ICMP-ping a peer's tunnel-side IP from this gateway. Returns zeros on
-   *  unreachable instead of throwing (server-side helper handles loss). */
-  pingPeer(ip: string) {
+   *  unreachable instead of throwing (server-side helper handles loss).
+   *  count = 1..10 packets (default 4). */
+  pingPeer(ip: string, count?: number) {
     return this.request<{
       ip: string;
       transmitted: number;
@@ -212,6 +213,6 @@ export class GatewayClient {
       minMs: number | null;
       avgMs: number | null;
       maxMs: number | null;
-    }>("POST", "/ping", { ip });
+    }>("POST", "/ping", { ip, count });
   }
 }

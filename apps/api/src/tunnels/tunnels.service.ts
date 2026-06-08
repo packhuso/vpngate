@@ -121,7 +121,7 @@ export class TunnelsService {
   // gateway VM that hosts it, over the tunnel itself (private IP), not the
   // internet. Tells the customer "is my VPN client actually online and reachable
   // from the server end?" Goes through the gateway agent's /v1/ping endpoint.
-  async pingTunnel(userId: string, tunnelId: string) {
+  async pingTunnel(userId: string, tunnelId: string, count?: number) {
     const [t] = await sql<{
       private_ip: string;
       agent_endpoint: string;
@@ -140,7 +140,7 @@ export class TunnelsService {
       agent_token: t.agent_token,
     });
     try {
-      const r = await gw.pingPeer(t.private_ip);
+      const r = await gw.pingPeer(t.private_ip, count);
       return { results: [r] };
     } catch (e) {
       // Agent unreachable / errored — surface as a zero-loss-all-loss row so

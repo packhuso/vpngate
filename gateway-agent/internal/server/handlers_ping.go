@@ -14,7 +14,8 @@ import (
 )
 
 type pingReq struct {
-	IP string `json:"ip"`
+	IP    string `json:"ip"`
+	Count int    `json:"count"` // 1..10, default 4
 }
 
 type pingResp struct {
@@ -43,15 +44,22 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "INVALID_IP", "not a valid IP literal")
 		return
 	}
+	count := req.Count
+	if count <= 0 {
+		count = 4
+	}
+	if count > 10 {
+		count = 10
+	}
 	bin := "ping"
 	if ip.To4() == nil {
 		bin = "ping6"
 	}
-	// -c 4 packets, -W 2s/packet timeout, -i 0.3s interval, -n no DNS.
+	// -W 2s/packet timeout, -i 0.3s interval, -n no DNS. Count is caller-supplied.
 	cmd := exec.CommandContext(r.Context(), bin,
-		"-n", "-c", "4", "-W", "2", "-i", "0.3", ip.String())
+		"-n", "-c", strconv.Itoa(count), "-W", "2", "-i", "0.3", ip.String())
 	out, err := cmd.CombinedOutput()
-	resp := pingResp{IP: ip.String(), Transmitted: 4, Received: 0, LossPct: 100}
+	resp := pingResp{IP: ip.String(), Transmitted: count, Received: 0, LossPct: 100}
 	// 100% loss makes ping exit 1 — that's OK, we still parse the summary line.
 	_ = err
 	if m := reSummary.FindStringSubmatch(string(out)); m != nil {
