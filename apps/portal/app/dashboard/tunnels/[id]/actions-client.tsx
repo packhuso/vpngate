@@ -148,13 +148,12 @@ export default function TunnelActions({ tunnelId, tunnelName, publicIps, others 
         </div>
       )}
 
-      {publicIps.length > 0 && (
-        <div className="card">
+      <div className="card">
           <h2 className="section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Radar size={18} strokeWidth={2} /> ทดสอบการเชื่อมต่อ (Ping)
           </h2>
           <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 2 }}>
-            ping จากเซิร์ฟเวอร์ของเราไป public IP ของ tunnel — บอกว่า route ปกติและ peer ออนไลน์ไหม
+            ping จาก VPN gateway ไปที่ client (private IP ในอุโมงค์) — บอกว่า client เชื่อมต่อจริงและตอบกลับไหม
           </p>
           <button onClick={runPing} disabled={pingBusy} className="btn btn-primary" style={{ marginTop: 12 }}>
             <Radar size={16} />{pingBusy ? "กำลังทดสอบ…" : "ทดสอบ ping"}
@@ -182,7 +181,6 @@ export default function TunnelActions({ tunnelId, tunnelName, publicIps, others 
             <p style={{ fontSize: 12, color: "var(--color-text-muted)", marginTop: 8 }}>ไม่มี IP ให้ทดสอบ</p>
           )}
         </div>
-      )}
 
       <div className="card" style={{ borderColor: "var(--color-danger)" }}>
         <h2 className="section-title" style={{ color: "var(--color-danger)", display: "flex", alignItems: "center", gap: 8 }}>

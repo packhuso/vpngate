@@ -88,6 +88,9 @@ func (s *Server) Handler() http.Handler {
 	// OpenVPN client-cert issuance (OpenVPN backend only)
 	mux.HandleFunc("POST /v1/ovpn/clients/{publicKey}/cert", s.idempotent(s.handleIssueOvpnCert))
 
+	// Ping — control-plane requests this gateway ICMP-ping a peer's tunnel IP
+	mux.HandleFunc("POST /v1/ping", s.handlePing)
+
 	// Stats (polled by worker every 30s)
 	mux.HandleFunc("GET /v1/stats", s.handleStats)
 	mux.HandleFunc("GET /v1/stats/peers", s.handlePeerStats)

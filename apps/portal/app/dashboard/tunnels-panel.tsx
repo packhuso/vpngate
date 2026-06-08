@@ -1,7 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { fmtDateTime } from "../_lib/datetime";
-import { Plus, Trash2, FileDown, Settings2, Shield, KeyRound, Lock } from "lucide-react";
+import { Plus, Trash2, FileDown, Settings2, Shield, KeyRound, Lock, Radar } from "lucide-react";
+
+interface PingState { busy: boolean; avgMs?: number | null; lossPct?: number; err?: string }
 import { notifyDataChanged, onDataChanged, confirmIpChange } from "../_components/refresh-bus";
 
 interface PubIp { ip: string; blockId: string | null }
@@ -56,6 +58,25 @@ export default function TunnelsPanel() {
   const [allow, setAllow] = useState<AllowCell[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [pings, setPings] = useState<Record<string, PingState>>({});
+
+  async function runPing(tunnelId: string) {
+    setPings((m) => ({ ...m, [tunnelId]: { busy: true } }));
+    try {
+      const r = await fetch(`/v1/tunnels/${tunnelId}/ping`, {
+        method: "POST", credentials: "same-origin",
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.message?.message ?? j?.message ?? "ping failed");
+      const first = (j.results ?? [])[0];
+      setPings((m) => ({
+        ...m,
+        [tunnelId]: { busy: false, avgMs: first?.avgMs ?? null, lossPct: first?.lossPct ?? 100 },
+      }));
+    } catch (e) {
+      setPings((m) => ({ ...m, [tunnelId]: { busy: false, err: (e as Error).message } }));
+    }
+  }
 
   async function load() {
     const r = await fetch("/v1/tunnels", { credentials: "same-origin" });
@@ -334,6 +355,26 @@ export default function TunnelsPanel() {
                         </a>
                       </>
                     ))}
+                    {t.status === "active" && (() => {
+                      const p = pings[t.id];
+                      const dotColor = !p || p.busy || p.err ? "var(--color-text-subtle)"
+                        : p.lossPct === 0 ? "var(--color-success)"
+                        : (p.lossPct ?? 100) >= 100 ? "var(--color-danger)"
+                        : "var(--color-warning)";
+                      const label = p?.busy ? "…"
+                        : p?.err ? "error"
+                        : p?.avgMs != null ? `${p.avgMs.toFixed(0)}ms`
+                        : p && p.lossPct === 100 ? "ไม่ตอบ"
+                        : "Ping";
+                      return (
+                        <button onClick={() => runPing(t.id)} disabled={p?.busy} className="btn btn-ghost btn-sm"
+                          title={p?.err ?? "Ping จาก gateway → client (private IP)"}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ width: 7, height: 7, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />
+                          <Radar size={14} /> {label}
+                        </button>
+                      );
+                    })()}
                     {t.status === "active" && (
                       <a href={`/dashboard/tunnels/${t.id}`} className="btn btn-ghost btn-sm" title="Manage">
                         <Settings2 size={14} />

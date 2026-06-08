@@ -201,4 +201,17 @@ export class GatewayClient {
       idempotencyKey,
     );
   }
+  /** ICMP-ping a peer's tunnel-side IP from this gateway. Returns zeros on
+   *  unreachable instead of throwing (server-side helper handles loss). */
+  pingPeer(ip: string) {
+    return this.request<{
+      ip: string;
+      transmitted: number;
+      received: number;
+      lossPct: number;
+      minMs: number | null;
+      avgMs: number | null;
+      maxMs: number | null;
+    }>("POST", "/ping", { ip });
+  }
 }
