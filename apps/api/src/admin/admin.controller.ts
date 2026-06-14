@@ -30,13 +30,17 @@ import { AdminGuard } from "../auth/admin.guard";
 
 const VALID_BLOCK_SIZES = [2, 4, 8, 16, 32, 64, 128, 256] as const;
 
-/** Push a blackhole add/remove for a pool CIDR to every active gateway.
+/** Push a blackhole add/remove for a pool CIDR to non-BGP gateways.
+ *  Skip BGP-enabled nodes: they announce only allocated /32s, so Mikrotik
+ *  never sends unallocated-IP traffic there (no loop, no need for blackhole).
+ *  A stale blackhole on a BGP node would create a phantom backup route that
+ *  silently drops traffic on fail-over. Matches drift.ts:163-166 design.
  *  Best-effort: failures are logged, not fatal (drift will reconcile). */
 async function pushBlackholeAllGateways(cidr: string, add: boolean) {
   const gws = await sql<
     { agent_endpoint: string; agent_ca_cert: string; agent_token: string }[]
   >`SELECT agent_endpoint, agent_ca_cert, agent_token
-    FROM vpn_gateways WHERE status = 'active'`;
+    FROM vpn_gateways WHERE status = 'active' AND bgp_enabled = false`;
   for (const gw of gws) {
     try {
       await buildGatewayClient(gw).setBlackhole(
