@@ -12,6 +12,7 @@ export * from "./sstp-config";
 export * from "./pricing";
 export * from "./connection-events";
 export * from "./admin-grant";
+export * from "./frr-sync";
 export {
   cidrContains,
   cidrsOverlap,

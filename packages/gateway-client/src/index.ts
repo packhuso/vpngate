@@ -201,6 +201,22 @@ export class GatewayClient {
       idempotencyKey,
     );
   }
+  /** Atomically replace the contents of a managed FRR prefix-list (e.g.
+   *  VPN-POOLS). Each entry: {prefix, ge?, le?}. ge/le mirror FRR semantics:
+   *  ge=N → accept this prefix and any more-specific within it of length ≥ N. */
+  syncFrrPrefixList(
+    list: string,
+    prefixes: { prefix: string; ge?: number; le?: number }[],
+    idempotencyKey: string,
+  ) {
+    return this.request<{ status: string; list: string; entries: number }>(
+      "POST",
+      "/frr/prefix-list/sync",
+      { list, prefixes },
+      idempotencyKey,
+    );
+  }
+
   /** ICMP-ping a peer's tunnel-side IP from this gateway. Returns zeros on
    *  unreachable instead of throwing (server-side helper handles loss).
    *  count = 1..10 packets (default 4). */

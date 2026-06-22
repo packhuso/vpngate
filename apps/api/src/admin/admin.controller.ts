@@ -24,6 +24,7 @@ import {
   getOnlineStatus,
   adminGrantIp,
   adminGrantBlock,
+  syncPoolPrefixListsAllGateways,
   type SavePricingInput,
 } from "@vpnhub/provisioning";
 import { AdminGuard } from "../auth/admin.guard";
@@ -505,11 +506,16 @@ export class AdminController {
     // Install a blackhole route for the whole pool so unallocated IPs don't
     // loop with the upstream router (allocated /32s override it).
     await pushBlackholeAllGateways(body.block, true);
+    // Push the updated VPN-POOLS prefix-list to every BGP gateway so this
+    // pool's CIDR can actually be advertised (without this, FRR's
+    // route-map ANNOUNCE-POOLS filters it out → IPs are silently unreachable).
+    const sync = await syncPoolPrefixListsAllGateways();
     return {
       id: result.poolId,
       block: body.block,
       size,
       planId: result.planId,
+      frrSync: { pushed: sync.pushed, failures: sync.failures },
     };
   }
 
@@ -618,7 +624,18 @@ export class AdminController {
         ${JSON.stringify({ block: pool.block, ...result })}::jsonb)`;
     // Remove the pool's blackhole route from all gateways.
     await pushBlackholeAllGateways(pool.block, false);
+    // Re-sync VPN-POOLS so the deleted pool's CIDR is no longer in the filter.
+    await syncPoolPrefixListsAllGateways();
     return { deleted: true, ...result };
+  }
+
+  // POST /v1/admin/ips/pools/sync-frr — manually re-push VPN-POOLS to every
+  // BGP-enabled gateway from current DB state. Useful after a gateway agent
+  // restart, post-migration, or to fix any drift. Idempotent.
+  @Post("ips/pools/sync-frr")
+  @HttpCode(200)
+  async syncPrefixLists() {
+    return await syncPoolPrefixListsAllGateways();
   }
 
   // GET /v1/admin/ips?pool=<id> — enumerate ALL /32s in the pool, merged

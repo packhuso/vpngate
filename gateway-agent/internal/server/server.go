@@ -91,6 +91,9 @@ func (s *Server) Handler() http.Handler {
 	// Ping — control-plane requests this gateway ICMP-ping a peer's tunnel IP
 	mux.HandleFunc("POST /v1/ping", s.handlePing)
 
+	// FRR — replace a managed prefix-list (e.g. VPN-POOLS) atomically
+	mux.HandleFunc("POST /v1/frr/prefix-list/sync", s.idempotent(s.handlePrefixListSync))
+
 	// Stats (polled by worker every 30s)
 	mux.HandleFunc("GET /v1/stats", s.handleStats)
 	mux.HandleFunc("GET /v1/stats/peers", s.handlePeerStats)
