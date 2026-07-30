@@ -13,6 +13,7 @@ export * from "./pricing";
 export * from "./connection-events";
 export * from "./admin-grant";
 export * from "./frr-sync";
+export * from "./change-tier";
 export {
   cidrContains,
   cidrsOverlap,

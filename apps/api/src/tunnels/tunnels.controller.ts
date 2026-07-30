@@ -12,7 +12,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Response } from "express";
-import { ProvisionError, deleteTunnel } from "@vpnhub/provisioning";
+import { ProvisionError, deleteTunnel, changeTunnelTier } from "@vpnhub/provisioning";
 import { SessionGuard } from "../auth/session.guard";
 import { TunnelsService } from "./tunnels.service";
 
@@ -136,6 +136,30 @@ export class TunnelsController {
       return await this.tunnels.pingTunnel(req.user.userId, id, count);
     } catch (e) {
       throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  // POST /v1/tunnels/:id/change-tier — instant upgrade/downgrade. Full-charges
+  // new tier's current catalog price, resets billing cycle to +31d, snapshots
+  // the new price for grandfathering. No refund of old cycle's remaining time.
+  @Post(":id/change-tier")
+  @HttpCode(200)
+  async changeTier(
+    @Req() req: { user: { userId: string } },
+    @Param("id") id: string,
+    @Body() body: { speedTier: "tier_100mb" | "tier_500mb" | "tier_1gb" },
+  ) {
+    try {
+      return await changeTunnelTier({
+        userId: req.user.userId,
+        tunnelId: id,
+        newTier: body?.speedTier,
+      });
+    } catch (e) {
+      if (e instanceof ProvisionError) {
+        throw new BadRequestException({ code: e.code, message: e.message });
+      }
+      throw e;
     }
   }
 

@@ -1,8 +1,18 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRightLeft, AlertTriangle, Trash2, Radar } from "lucide-react";
+import { ArrowRightLeft, AlertTriangle, Trash2, Radar, Gauge } from "lucide-react";
 import PingDialog from "../ping-dialog-client";
+
+const TIER_LABEL: Record<string, string> = {
+  tier_100mb: "100 Mbps",
+  tier_500mb: "500 Mbps",
+  tier_1gb: "1 Gbps",
+};
+interface SpeedPrice { tier: string; priceSatang: number; sortOrder: number }
+interface AllowCell { protocol: string; tier: string; enabled: boolean }
+const bahtFmt = (satang: number) =>
+  (satang / 100).toLocaleString("en-US", { maximumFractionDigits: 0 });
 
 interface PubIp { ip: string; blockId: string | null }
 interface OtherTunnel { id: string; name: string }
@@ -10,15 +20,75 @@ interface Props {
   tunnelId: string;
   tunnelName: string;
   privateIp: string;
+  currentTier: string;
+  protocol: string;
   publicIps: PubIp[];
   others: OtherTunnel[];
 }
 
-export default function TunnelActions({ tunnelId, tunnelName, privateIp, publicIps, others }: Props) {
+export default function TunnelActions({ tunnelId, tunnelName, privateIp, currentTier, protocol, publicIps, others }: Props) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [pingOpen, setPingOpen] = useState(false);
+
+  // Change-tier state
+  const [tierPrices, setTierPrices] = useState<SpeedPrice[]>([]);
+  const [tierAllow, setTierAllow] = useState<AllowCell[]>([]);
+  const [walletBal, setWalletBal] = useState<number | null>(null);
+  const [targetTier, setTargetTier] = useState<string>("");
+  const [tierBusy, setTierBusy] = useState(false);
+  const [tierErr, setTierErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      const [pRes, wRes] = await Promise.all([
+        fetch("/v1/billing/pricing", { credentials: "same-origin" }),
+        fetch("/v1/billing/summary", { credentials: "same-origin" }),
+      ]);
+      if (pRes.ok) {
+        const d = await pRes.json();
+        setTierPrices((d.speed ?? []).sort((a: SpeedPrice, b: SpeedPrice) => a.sortOrder - b.sortOrder));
+        setTierAllow(d.allow ?? []);
+      }
+      if (wRes.ok) {
+        const d = await wRes.json();
+        setWalletBal(Number(d.balanceSatang ?? 0));
+      }
+    })();
+  }, []);
+
+  const availableTiers = tierPrices.filter((p) => {
+    if (p.tier === currentTier) return false;
+    const cell = tierAllow.find((c) => c.protocol === protocol && c.tier === p.tier);
+    return cell?.enabled ?? true;
+  });
+  const selected = tierPrices.find((p) => p.tier === targetTier);
+  const canAfford = selected != null && walletBal != null && walletBal >= selected.priceSatang;
+
+  async function submitChangeTier() {
+    if (!selected) return;
+    const ok = confirm(
+      `เปลี่ยน tier: ${TIER_LABEL[currentTier] ?? currentTier} → ${TIER_LABEL[selected.tier] ?? selected.tier}\n\n` +
+      `• ตัดเงิน ฿${bahtFmt(selected.priceSatang)} ทันที\n` +
+      `• เริ่มนับรอบใหม่ 31 วัน\n` +
+      `• ไม่คืนเงินของรอบเดิมที่เหลือ\n\n` +
+      `ยืนยันดำเนินการ?`,
+    );
+    if (!ok) return;
+    setTierBusy(true); setTierErr(null);
+    try {
+      const r = await fetch(`/v1/tunnels/${tunnelId}/change-tier`, {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ speedTier: selected.tier }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j?.message?.message ?? j?.message ?? "change-tier failed");
+      router.refresh();
+    } catch (e) { setTierErr((e as Error).message); }
+    finally { setTierBusy(false); }
+  }
 
   type Group =
     | { kind: "single"; ip: string }
@@ -118,6 +188,60 @@ export default function TunnelActions({ tunnelId, tunnelName, privateIp, publicI
           </div>
         </div>
       )}
+
+      <div className="card">
+        <h2 className="section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Gauge size={18} strokeWidth={2} /> เปลี่ยน Speed Tier
+        </h2>
+        <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 2 }}>
+          Tier ปัจจุบัน: <strong style={{ color: "var(--color-text)" }}>{TIER_LABEL[currentTier] ?? currentTier}</strong>
+          {walletBal != null && (
+            <> · Wallet: <strong style={{ color: "var(--color-text)" }}>฿{bahtFmt(walletBal)}</strong></>
+          )}
+        </p>
+        <p style={{ fontSize: 11, color: "var(--color-text-muted)", marginTop: 4 }}>
+          ⚠ ตัดเงินตาม tier ใหม่ทันที · เริ่มนับรอบใหม่ 31 วัน · <strong>ไม่คืนเงินรอบเดิมที่เหลือ</strong>
+        </p>
+        <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <select
+            className="input"
+            value={targetTier}
+            onChange={(e) => setTargetTier(e.target.value)}
+            disabled={tierBusy || availableTiers.length === 0}
+            style={{ flex: "1 1 240px" }}
+          >
+            <option value="">— เลือก tier ใหม่ —</option>
+            {availableTiers.map((p) => (
+              <option key={p.tier} value={p.tier}>
+                {TIER_LABEL[p.tier] ?? p.tier} · ฿{bahtFmt(p.priceSatang)}/31d
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={submitChangeTier}
+            disabled={tierBusy || !selected || !canAfford}
+            className="btn btn-primary"
+            title={
+              !selected ? "เลือก tier ก่อน"
+              : !canAfford ? `Wallet ไม่พอ (ต้องการ ฿${bahtFmt(selected.priceSatang)})`
+              : ""
+            }
+          >
+            <Gauge size={16} /> {tierBusy ? "กำลังเปลี่ยน…" : "เปลี่ยน + ตัดเงิน"}
+          </button>
+        </div>
+        {tierErr && <p style={{ color: "var(--color-danger)", fontSize: 12, marginTop: 8 }}>⚠ {tierErr}</p>}
+        {selected && !canAfford && (
+          <p style={{ color: "var(--color-danger)", fontSize: 12, marginTop: 8 }}>
+            Wallet ไม่พอ — ต้องการ ฿{bahtFmt(selected.priceSatang)}, มี ฿{bahtFmt(walletBal ?? 0)}
+          </p>
+        )}
+        {availableTiers.length === 0 && (
+          <p style={{ fontSize: 12, color: "var(--color-text-muted)", marginTop: 8 }}>
+            ไม่มี tier อื่นที่เปิดขายสำหรับ protocol นี้
+          </p>
+        )}
+      </div>
 
       <div className="card">
         <h2 className="section-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>

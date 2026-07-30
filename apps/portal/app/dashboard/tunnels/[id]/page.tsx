@@ -42,6 +42,7 @@ export default async function TunnelDetail({ params }: Params) {
       config_blob: string | null;
       created_at: Date;
       next_billing_at: Date;
+      speed_tier: string;
     }[]
   >`
     SELECT t.name, t.description, t.status, t.protocol, host(t.private_ip) AS private_ip,
@@ -49,7 +50,7 @@ export default async function TunnelDetail({ params }: Params) {
            g.wg_endpoint, g.wg_port, g.private_subnet::text AS private_subnet,
            g.ovpn_endpoint, g.ovpn_port, g.sstp_endpoint,
            t.ovpn_client_cert, t.ovpn_client_key_encrypted, t.config_blob,
-           t.created_at, t.next_billing_at
+           t.created_at, t.next_billing_at, t.speed_tier
     FROM tunnels t JOIN vpn_gateways g ON g.id = t.gateway_id
     WHERE t.id = ${id} AND t.user_id = ${sess.userId}
       AND t.deleted_at IS NULL`;
@@ -247,6 +248,8 @@ export default async function TunnelDetail({ params }: Params) {
         tunnelId={id}
         tunnelName={t.name}
         privateIp={t.private_ip}
+        currentTier={t.speed_tier}
+        protocol={t.protocol}
         publicIps={pubIps.map((p) => ({ ip: p.ip, blockId: p.block_id }))}
         others={others}
       />
