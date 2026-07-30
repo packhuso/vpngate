@@ -10,7 +10,7 @@ import {
   ValidationError,
 } from "./errors";
 
-export type TunnelProtocol = "wireguard" | "openvpn" | "sstp";
+export type TunnelProtocol = "wireguard";
 
 export interface CreateTunnelInput {
   userId: string;
@@ -44,9 +44,10 @@ export async function createTunnel(
     );
   }
   const description = (input.description ?? "").slice(0, 300) || null;
-  const protocol: TunnelProtocol = input.protocol ?? "wireguard";
-  if (protocol !== "wireguard" && protocol !== "openvpn" && protocol !== "sstp") {
-    throw ValidationError(`bad protocol ${protocol}`);
+  // Only WireGuard is offered now — OVPN/SSTP were removed.
+  const protocol: TunnelProtocol = "wireguard";
+  if (input.protocol && input.protocol !== "wireguard") {
+    throw ValidationError(`protocol ${input.protocol} not supported (WireGuard only)`);
   }
   // Price + allow matrix come from admin-configurable pricing (migration 0010).
   let price: number;
@@ -58,15 +59,7 @@ export async function createTunnel(
   if (!(await tierAllowed(protocol, input.speedTier))) {
     throw ValidationError(`${protocol} ไม่เปิดขายแพ็กเกจ ${input.speedTier} (ปิดโดยแอดมิน)`);
   }
-  // Each gateway advertises the protocols it serves via a per-protocol column:
-  // WG=wg_public_key, OpenVPN=ovpn_endpoint, SSTP=sstp_endpoint. Select only
-  // gateways that serve the chosen protocol.
-  const protoFilter =
-    protocol === "openvpn"
-      ? sql`AND ovpn_endpoint IS NOT NULL`
-      : protocol === "sstp"
-        ? sql`AND sstp_endpoint IS NOT NULL`
-        : sql`AND wg_public_key IS NOT NULL`;
+  const protoFilter = sql`AND wg_public_key IS NOT NULL`;
 
   return sql.begin(async (tx) => {
     const [wallet] = await tx`

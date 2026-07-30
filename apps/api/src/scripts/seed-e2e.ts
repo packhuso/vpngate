@@ -14,11 +14,11 @@ async function main() {
   // --- gateway gw1 (the real LAN gateway) ---
   const gw = await sql`
     INSERT INTO vpn_gateways (hostname, location, agent_endpoint, agent_ca_cert,
-      agent_token, wg_endpoint, wg_port, wg_public_key, ovpn_endpoint,
+      agent_token, wg_endpoint, wg_port, wg_public_key,
       private_subnet, max_tunnels, status)
     VALUES ('vpnhub-gw-1', 'lan-test', 'https://10.1.3.247:9443/v1', ${caCert},
       ${agentTokenEnc}, '10.1.3.247', 51820,
-      'N6W/psDmPbFxT/huWQK4WP4h7wB5q77SciZ77ldFxQ0=', '10.1.3.247',
+      'N6W/psDmPbFxT/huWQK4WP4h7wB5q77SciZ77ldFxQ0=',
       '10.99.0.0/24', 500, 'active')
     ON CONFLICT (hostname) DO UPDATE SET
       agent_endpoint = EXCLUDED.agent_endpoint,

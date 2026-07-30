@@ -7,8 +7,6 @@ export * from "./ip-block";
 export * from "./delete-tunnel";
 export * from "./billing-scheduler";
 export * from "./notify";
-export * from "./ovpn-config";
-export * from "./sstp-config";
 export * from "./pricing";
 export * from "./connection-events";
 export * from "./admin-grant";

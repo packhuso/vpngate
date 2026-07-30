@@ -14,8 +14,6 @@ const TIER_LABEL: Record<string, string> = {
 };
 const PROTO_LABEL: Record<string, string> = {
   wireguard: "WireGuard",
-  openvpn: "OpenVPN",
-  sstp: "SSTP",
 };
 const ipLabel = (sz: number) =>
   sz === 1 ? "/32 — 1 IP (single)" : `/${32 - Math.log2(sz)} — ${sz} IPs (block)`;
@@ -102,7 +100,7 @@ export default function AdminPricing() {
       <div className="card">
         <h2 className="section-title" style={{ marginBottom: 4 }}>อนุญาตขาย (Protocol × Tier)</h2>
         <p style={{ fontSize: 12, color: "var(--color-text-muted)", marginTop: 0, marginBottom: 14 }}>
-          ติ๊กช่องที่อยากเปิดขาย — เช่นปิด SSTP × 1 Gbps เพราะวิ่งไม่ถึง
+          ติ๊กช่องที่อยากเปิดขาย — ปล่อยว่างเพื่อซ่อน tier นั้นจากหน้าซื้อ tunnel
         </p>
         <div style={{ overflowX: "auto" }}>
           <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>

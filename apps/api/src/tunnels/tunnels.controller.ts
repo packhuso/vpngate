@@ -21,7 +21,7 @@ interface CreateTunnelBody {
   name: string;
   description?: string;
   gatewayHostname?: string;
-  protocol?: "wireguard" | "openvpn" | "sstp";
+  protocol?: "wireguard";
 }
 
 @Controller("tunnels")
@@ -42,44 +42,17 @@ export class TunnelsController {
     return this.tunnels.availableProtocols();
   }
 
-  // GET /v1/tunnels/:id/sstp-credentials — issues + caches the SSTP creds on
-  // first call so the detail page can show them without downloading the .rsc.
-  @Get(":id/sstp-credentials")
-  async sstpCredentials(
-    @Req() req: { user: { userId: string } },
-    @Param("id") id: string,
-  ) {
-    try {
-      return await this.tunnels.sstpCredentials(req.user.userId, id);
-    } catch (e) {
-      throw new BadRequestException((e as Error).message);
-    }
-  }
-
   // GET /v1/tunnels/:id/config?format=wireguard|mikrotik
   @Get(":id/config")
   async config(
-    @Req() req: { user: { userId: string } } & {
-      query: { format?: string };
-    },
+    @Req() req: { user: { userId: string } } & { query: { format?: string } },
     @Param("id") id: string,
     @Res() res: Response,
   ) {
-    const q = req.query?.format;
-    const fmt =
-      q === "mikrotik"
-        ? "mikrotik"
-        : q === "openvpn" || q === "ovpn"
-          ? "openvpn"
-          : q === "sstp"
-            ? "sstp"
-            : "wireguard";
+    const fmt = req.query?.format === "mikrotik" ? "mikrotik" : "wireguard";
     const r = await this.tunnels.getConfig(req.user.userId, id, fmt);
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${r.filename}"`,
-    );
+    res.setHeader("Content-Disposition", `attachment; filename="${r.filename}"`);
     res.setHeader("Cache-Control", "no-store");
     res.send(r.conf);
   }

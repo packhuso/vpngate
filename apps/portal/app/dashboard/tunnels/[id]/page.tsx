@@ -8,7 +8,6 @@ import { authConfig, resolveSession } from "@vpnhub/auth";
 import { sql } from "@vpnhub/db";
 import { decryptSecret } from "@vpnhub/shared";
 import TunnelActions from "./actions-client";
-import SstpCreds from "./sstp-creds-client";
 import ConnInfo from "./copy-field-client";
 
 export const runtime = "nodejs";
@@ -34,12 +33,6 @@ export default async function TunnelDetail({ params }: Params) {
       wg_endpoint: string | null;
       wg_port: number | null;
       private_subnet: string;
-      ovpn_endpoint: string | null;
-      ovpn_port: number | null;
-      sstp_endpoint: string | null;
-      ovpn_client_cert: string | null;
-      ovpn_client_key_encrypted: string | null;
-      config_blob: string | null;
       created_at: Date;
       next_billing_at: Date;
       speed_tier: string;
@@ -48,8 +41,6 @@ export default async function TunnelDetail({ params }: Params) {
     SELECT t.name, t.description, t.status, t.protocol, host(t.private_ip) AS private_ip,
            t.wg_private_key_encrypted, g.wg_public_key AS gw_pub,
            g.wg_endpoint, g.wg_port, g.private_subnet::text AS private_subnet,
-           g.ovpn_endpoint, g.ovpn_port, g.sstp_endpoint,
-           t.ovpn_client_cert, t.ovpn_client_key_encrypted, t.config_blob,
            t.created_at, t.next_billing_at, t.speed_tier
     FROM tunnels t JOIN vpn_gateways g ON g.id = t.gateway_id
     WHERE t.id = ${id} AND t.user_id = ${sess.userId}
@@ -88,16 +79,12 @@ export default async function TunnelDetail({ params }: Params) {
     : t.status === "provisioning" ? "badge-warning"
     : t.status === "suspended" ? "badge-danger" : "badge-neutral";
 
-  const proto = t.protocol;
-  const protoMeta =
-    proto === "openvpn" ? { label: "OpenVPN", badge: "badge-info" }
-    : proto === "sstp" ? { label: "SSTP", badge: "badge-warning" }
-    : { label: "WireGuard", badge: "badge-primary" };
+  const protoMeta = { label: "WireGuard", badge: "badge-primary" };
 
-  // WireGuard config + QR (only for WG tunnels; gw_pub is null for OVPN/SSTP).
+  // WireGuard config + QR
   let wgConf: string | null = null;
   let qrDataUrl: string | null = null;
-  if (proto === "wireguard" && t.gw_pub) {
+  if (t.gw_pub) {
     const allowedIPs = [t.private_subnet, ...routableCidrs].join(", ");
     const privateKey = decryptSecret(t.wg_private_key_encrypted);
     wgConf =
@@ -105,8 +92,7 @@ export default async function TunnelDetail({ params }: Params) {
       `[Peer]\nPublicKey = ${t.gw_pub}\nEndpoint = ${t.wg_endpoint}:${t.wg_port}\n` +
       `AllowedIPs = ${allowedIPs}\nPersistentKeepalive = 25\n`;
     // A WG config with many public IPs (e.g. a /24 block) can exceed the QR
-    // capacity — that's fine, just skip the QR (the .conf download + raw view
-    // still work). Don't let it crash the whole page.
+    // capacity — that's fine, just skip the QR (.conf download still works).
     try {
       qrDataUrl = await QRCode.toDataURL(wgConf, {
         margin: 1, scale: 6, color: { dark: "#0f172a", light: "#ffffff" },
@@ -116,36 +102,7 @@ export default async function TunnelDetail({ params }: Params) {
     }
   }
 
-  // OpenVPN raw .ovpn — assembled from the cached creds (no agent call). Only
-  // available once the .ovpn has been downloaded at least once (creds cached).
-  let ovpnConf: string | null = null;
-  if (proto === "openvpn" && t.ovpn_client_cert && t.ovpn_client_key_encrypted && t.config_blob) {
-    try {
-      const node = JSON.parse(t.config_blob) as { ca: string };
-      const host = String(t.ovpn_endpoint).split(":")[0];
-      const clientKey = decryptSecret(t.ovpn_client_key_encrypted);
-      ovpnConf =
-        `client\ndev tun\nproto udp\nremote ${host} ${t.ovpn_port ?? 1194}\n` +
-        `resolv-retry infinite\nnobind\npersist-key\npersist-tun\n` +
-        `remote-cert-tls server\ncipher AES-256-GCM\n` +
-        `data-ciphers AES-256-GCM:CHACHA20-POLY1305\nauth SHA256\nverb 3\nmssfix 1400\n\n` +
-        `<ca>\n${node.ca.trim()}\n</ca>\n` +
-        `<cert>\n${t.ovpn_client_cert.trim()}\n</cert>\n` +
-        `<key>\n${clientKey.trim()}\n</key>\n`;
-    } catch { /* malformed cache → no raw view */ }
-  }
-
-  // SSTP credentials (shown so the user can configure manually too).
-  const sstpUser = proto === "sstp" ? t.ovpn_client_cert : null;
-  const sstpPass =
-    proto === "sstp" && t.ovpn_client_key_encrypted
-      ? decryptSecret(t.ovpn_client_key_encrypted)
-      : null;
-
-  const endpoint =
-    proto === "openvpn" ? `${t.ovpn_endpoint} (UDP 1194)`
-    : proto === "sstp" ? `${t.sstp_endpoint} (TCP 443)`
-    : t.wg_endpoint ? `${t.wg_endpoint}:${t.wg_port}` : "—";
+  const endpoint = t.wg_endpoint ? `${t.wg_endpoint}:${t.wg_port}` : "—";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -173,9 +130,7 @@ export default async function TunnelDetail({ params }: Params) {
       <div className="card">
         <h2 className="section-title">Client config</h2>
         <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 2 }}>
-          {proto === "wireguard" && "ดาวน์โหลด .conf หรือสแกน QR ด้วย WireGuard mobile app · หรือใช้ Mikrotik script"}
-          {proto === "openvpn" && "ดาวน์โหลด .ovpn เข้า OpenVPN client (มือถือ/คอม) · Mikrotik ใช้ .rsc (อัปโหลดไฟล์ .ovpn ก่อน import)"}
-          {proto === "sstp" && "SSTP วิ่งบน TLS:443 (ผ่าน firewall เข้มได้) · Mikrotik ใช้ .rsc · หรือกรอก user/pass ด้านล่างเอง"}
+          ดาวน์โหลด .conf หรือสแกน QR ด้วย WireGuard mobile app · หรือใช้ Mikrotik script
         </p>
 
         <div style={{ display: "grid", gridTemplateColumns: qrDataUrl ? "auto 1fr" : "1fr", gap: 24, marginTop: 16, alignItems: "start" }}>
@@ -189,41 +144,16 @@ export default async function TunnelDetail({ params }: Params) {
           )}
           <div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {proto === "wireguard" && (
-                <>
-                  <a href={`/v1/tunnels/${id}/config`} download={`${t.name}.conf`} className="btn btn-primary">
-                    <FileDown size={16} /> Download .conf
-                  </a>
-                  <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`} className="btn btn-secondary">
-                    <FileDown size={16} /> Mikrotik script
-                  </a>
-                </>
-              )}
-              {proto === "openvpn" && (
-                <>
-                  <a href={`/v1/tunnels/${id}/config?format=ovpn`} download={`${t.name}.ovpn`} className="btn btn-primary">
-                    <FileDown size={16} /> Download .ovpn
-                  </a>
-                  <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.ovpn.rsc`} className="btn btn-secondary">
-                    <FileDown size={16} /> Mikrotik script
-                  </a>
-                </>
-              )}
-              {proto === "sstp" && (
-                <a href={`/v1/tunnels/${id}/config?format=sstp`} download={`${t.name}.sstp.rsc`} className="btn btn-primary">
-                  <FileDown size={16} /> Mikrotik script (.rsc)
-                </a>
-              )}
+              <a href={`/v1/tunnels/${id}/config`} download={`${t.name}.conf`} className="btn btn-primary">
+                <FileDown size={16} /> Download .conf
+              </a>
+              <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`} className="btn btn-secondary">
+                <FileDown size={16} /> Mikrotik script
+              </a>
             </div>
 
-            {proto === "wireguard" && t.wg_endpoint && (
+            {t.wg_endpoint && (
               <ConnInfo server={String(t.wg_endpoint)} port={`${t.wg_port ?? 51820}`} />
-            )}
-            {proto === "openvpn" && (
-              <ConnInfo server={String(t.ovpn_endpoint)} port={`${t.ovpn_port ?? 1194}`} />
-            )}
-            {proto === "sstp" && (
-              <SstpCreds tunnelId={id} server={String(t.sstp_endpoint)} port="443" username={sstpUser} password={sstpPass} />
             )}
 
             <div className="card-compact" style={{ marginTop: 16, padding: 12 }}>
@@ -254,14 +184,14 @@ export default async function TunnelDetail({ params }: Params) {
         others={others}
       />
 
-      {(wgConf || ovpnConf) && (
+      {wgConf && (
         <div className="card">
           <details>
             <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--color-text-muted)" }}>
-              Show raw {wgConf ? ".conf" : ".ovpn"} <span style={{ color: "var(--color-danger)" }}>(contains private key)</span>
+              Show raw .conf <span style={{ color: "var(--color-danger)" }}>(contains private key)</span>
             </summary>
             <pre className="mono" style={{ marginTop: 12, padding: 12, background: "var(--color-bg)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-              {wgConf ?? ovpnConf}
+              {wgConf}
             </pre>
           </details>
         </div>

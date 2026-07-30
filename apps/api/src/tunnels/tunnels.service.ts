@@ -8,10 +8,6 @@ import { sql } from "@vpnhub/db";
 import { decryptSecret } from "@vpnhub/shared";
 import {
   createTunnel,
-  getOvpnConfig,
-  getOvpnMikrotikScript,
-  getSstpConfig,
-  ensureSstpCredentials,
   getOnlineStatus,
   buildGatewayClient,
   type CreateTunnelInput,
@@ -39,20 +35,13 @@ export class TunnelsService {
     return { status: "provisioning", ...r };
   }
 
-  // GET /v1/tunnels/options — protocols offerable right now (data-driven).
-  // A protocol is available only when an active gateway can serve it; OpenVPN
-  // lights up automatically the moment an OpenVPN node is registered.
+  // GET /v1/tunnels/options — protocols offerable right now. WG only.
   async availableProtocols() {
-    const [r] = await sql<{ wg: boolean; ovpn: boolean; sstp: boolean }[]>`
-      SELECT
-        COALESCE(bool_or(wg_public_key IS NOT NULL), false) AS wg,
-        COALESCE(bool_or(ovpn_endpoint IS NOT NULL), false) AS ovpn,
-        COALESCE(bool_or(sstp_endpoint IS NOT NULL), false) AS sstp
+    const [r] = await sql<{ wg: boolean }[]>`
+      SELECT COALESCE(bool_or(wg_public_key IS NOT NULL), false) AS wg
       FROM vpn_gateways WHERE status = 'active'`;
     const protocols: string[] = [];
     if (r?.wg) protocols.push("wireguard");
-    if (r?.ovpn) protocols.push("openvpn");
-    if (r?.sstp) protocols.push("sstp");
     return {
       protocols,
       tiers: [
@@ -110,13 +99,6 @@ export class TunnelsService {
     }));
   }
 
-  // GET /v1/tunnels/:id/config?format=wireguard|mikrotik|openvpn
-  // SSTP credentials (server/port/username/password), issuing + caching them on
-  // first call. Lets the portal show creds on first page load (no .rsc click).
-  async sstpCredentials(userId: string, tunnelId: string) {
-    return ensureSstpCredentials(userId, tunnelId);
-  }
-
   // Server-side connectivity test: ping the tunnel's peer (client) from the
   // gateway VM that hosts it, over the tunnel itself (private IP), not the
   // internet. Tells the customer "is my VPN client actually online and reachable
@@ -159,28 +141,8 @@ export class TunnelsService {
   async getConfig(
     userId: string,
     tunnelId: string,
-    format: "wireguard" | "mikrotik" | "openvpn" | "sstp" = "wireguard",
+    format: "wireguard" | "mikrotik" = "wireguard",
   ) {
-    // OpenVPN profiles assemble in the provisioning package (lazy cert issuance
-    // via the gateway agent + inline .ovpn build).
-    if (format === "openvpn") {
-      return getOvpnConfig(userId, tunnelId);
-    }
-    if (format === "sstp") {
-      return getSstpConfig(userId, tunnelId);
-    }
-    // Mikrotik script differs per protocol — branch before the WG-only query.
-    if (format === "mikrotik") {
-      const [p] = await sql<{ protocol: string }[]>`
-        SELECT protocol FROM tunnels
-        WHERE id = ${tunnelId} AND user_id = ${userId} AND deleted_at IS NULL`;
-      if (p?.protocol === "openvpn") {
-        return getOvpnMikrotikScript(userId, tunnelId);
-      }
-      if (p?.protocol === "sstp") {
-        return getSstpConfig(userId, tunnelId);
-      }
-    }
     const [t] = await sql<
       {
         name: string;

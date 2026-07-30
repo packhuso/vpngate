@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { fmtDateTime } from "../_lib/datetime";
-import { Plus, Trash2, FileDown, Settings2, Shield, KeyRound, Lock, Radar } from "lucide-react";
+import { Plus, Trash2, FileDown, Settings2, Shield, Radar } from "lucide-react";
 import PingDialog from "./tunnels/ping-dialog-client";
 import { notifyDataChanged, onDataChanged, confirmIpChange } from "../_components/refresh-bus";
 
@@ -36,8 +36,6 @@ interface AllowCell { protocol: string; tier: string; enabled: boolean }
 
 const PROTOCOLS = [
   { v: "wireguard", label: "WireGuard", icon: Shield, hint: "เร็ว, เบา, แนะนำ" },
-  { v: "openvpn", label: "OpenVPN", icon: KeyRound, hint: "เข้ากันได้กว้าง (router/firewall เก่า)" },
-  { v: "sstp", label: "SSTP", icon: Lock, hint: "วิ่งบน TLS:443 ผ่าน firewall เข้มได้" },
 ];
 
 const statusBadge = (s: string) =>
@@ -108,7 +106,7 @@ export default function TunnelsPanel() {
       return;
     }
     const tierLabel = tiers.find((t) => t.v === tier)?.label ?? tier;
-    const protoLabel = protocol === "openvpn" ? "OpenVPN" : "WireGuard";
+    const protoLabel = "WireGuard";
     if (!confirm(
       `ยืนยันการสร้าง Tunnel\n\n` +
       `ชื่อ: ${name}\n` +
@@ -298,9 +296,7 @@ export default function TunnelsPanel() {
                   </span>
                   <span className="mono" style={{ fontSize: 12, color: "var(--color-text-muted)" }}>{t.privateIp}</span>
                   <span className="badge-neutral badge">{t.speedTier.replace("tier_", "")}</span>
-                  <span className={t.protocol === "openvpn" ? "badge badge-info" : t.protocol === "sstp" ? "badge badge-warning" : "badge badge-primary"}>
-                    {t.protocol === "openvpn" ? "OpenVPN" : t.protocol === "sstp" ? "SSTP" : "WireGuard"}
-                  </span>
+                  <span className="badge badge-primary">WireGuard</span>
                   <span className={`badge ${statusBadge(t.status)}`}>{t.status}</span>
                   <span className={`badge ${t.online ? "badge-success" : "badge-neutral"}`}
                     title={t.lastSeenAt ? `last seen ${fmtDateTime(t.lastSeenAt)}` : "no connection yet"}>
@@ -308,23 +304,7 @@ export default function TunnelsPanel() {
                   </span>
 
                   <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                    {t.status === "active" && (t.protocol === "openvpn" ? (
-                      <>
-                        <a href={`/v1/tunnels/${t.id}/config?format=ovpn`} download={`${t.name}.ovpn`}
-                          className="btn btn-secondary btn-sm" title="OpenVPN .ovpn">
-                          <FileDown size={14} />.ovpn
-                        </a>
-                        <a href={`/v1/tunnels/${t.id}/config?format=mikrotik`} download={`${t.name}.ovpn.rsc`}
-                          className="btn btn-secondary btn-sm" title="Mikrotik script (RouterOS 7.17+)">
-                          <FileDown size={14} />Mikrotik
-                        </a>
-                      </>
-                    ) : t.protocol === "sstp" ? (
-                      <a href={`/v1/tunnels/${t.id}/config?format=sstp`} download={`${t.name}.sstp.rsc`}
-                        className="btn btn-secondary btn-sm" title="Mikrotik SSTP script">
-                        <FileDown size={14} />Mikrotik
-                      </a>
-                    ) : (
+                    {t.status === "active" && (
                       <>
                         <a href={`/v1/tunnels/${t.id}/config`} download={`${t.name}.conf`}
                           className="btn btn-secondary btn-sm" title="WireGuard .conf">
@@ -335,7 +315,7 @@ export default function TunnelsPanel() {
                           <FileDown size={14} />Mikrotik
                         </a>
                       </>
-                    ))}
+                    )}
                     {t.status === "active" && (
                       <button onClick={() => setPingTarget({ id: t.id, name: t.name, privateIp: t.privateIp })}
                         className="btn btn-ghost btn-sm" title="Ping จาก gateway → client (private IP)"

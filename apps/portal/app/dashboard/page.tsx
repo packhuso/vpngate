@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { Wallet, Cable, Globe, Shield, KeyRound, Lock, ArrowRight } from "lucide-react";
+import { Wallet, Cable, Globe, Shield, ArrowRight } from "lucide-react";
 import { authConfig, resolveSession } from "@vpnhub/auth";
 import { sql } from "@vpnhub/db";
 import YourIp from "./your-ip-client";
@@ -33,8 +33,6 @@ export default async function Dashboard() {
 
   const byProto = [
     { key: "wireguard", label: "WireGuard", Icon: Shield, color: "var(--color-primary)" },
-    { key: "openvpn", label: "OpenVPN", Icon: KeyRound, color: "#0ea5e9" },
-    { key: "sstp", label: "SSTP", Icon: Lock, color: "#d97706" },
   ];
 
   return (
