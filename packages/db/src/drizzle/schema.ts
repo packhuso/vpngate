@@ -437,9 +437,8 @@ export const notifications = pgTable("notifications", {
 export const bandwidth_usage = pgTable("bandwidth_usage", {
 	tunnel_id: uuid().notNull(),
 	bucket_start: timestamp({ withTimezone: true, mode: 'string' }).notNull(),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	// Deltas per bucket, not cumulative — sidesteps WG counter resets.
 	rx_bytes: bigint({ mode: "number" }).notNull(),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
 	tx_bytes: bigint({ mode: "number" }).notNull(),
 }, (table) => [
 	foreignKey({
@@ -448,4 +447,19 @@ export const bandwidth_usage = pgTable("bandwidth_usage", {
 			name: "bandwidth_usage_tunnel_id_fkey"
 		}),
 	primaryKey({ columns: [table.tunnel_id, table.bucket_start], name: "bandwidth_usage_pkey"}),
+]);
+
+// Scratch table for delta computation across worker restarts. One row per
+// tunnel, holds the last observed cumulative counters from the WG kernel.
+export const tunnel_stats_last = pgTable("tunnel_stats_last", {
+	tunnel_id: uuid().primaryKey().notNull(),
+	last_bytes_rx: bigint({ mode: "number" }).notNull(),
+	last_bytes_tx: bigint({ mode: "number" }).notNull(),
+	last_ts: timestamp({ withTimezone: true, mode: 'string' }).notNull(),
+}, (table) => [
+	foreignKey({
+			columns: [table.tunnel_id],
+			foreignColumns: [tunnels.id],
+			name: "tunnel_stats_last_tunnel_id_fkey"
+		}),
 ]);

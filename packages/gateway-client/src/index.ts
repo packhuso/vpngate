@@ -125,6 +125,21 @@ export class GatewayClient {
   listPeers() {
     return this.request<{ interface: string; peers: Peer[] }>("GET", "/peers");
   }
+  /** Lightweight per-peer traffic counters straight from the WG kernel
+   *  (cumulative bytesRx/bytesTx). Meant for the periodic traffic sampler —
+   *  callers compute deltas across ticks. Cheap: one `wg show wg0 dump`. */
+  getPeerStats() {
+    return this.request<{
+      collectedAt: string;
+      peers: {
+        publicKey: string;
+        bytesRx: number;
+        bytesTx: number;
+        lastHandshake: string | null;
+        lastEndpoint: string | null;
+      }[];
+    }>("GET", "/stats/peers");
+  }
   createPeer(input: CreatePeerInput, idempotencyKey: string) {
     return this.request<{ status: string; peerId: string; interface: string }>(
       "POST",

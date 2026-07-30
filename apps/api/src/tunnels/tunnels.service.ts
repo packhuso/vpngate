@@ -99,6 +99,57 @@ export class TunnelsService {
     }));
   }
 
+  // Per-tunnel traffic samples for the portal chart. Server-side aggregates
+  // 5-min raw samples into the caller-specified bucket via SQL date_bin
+  // (fast + no client-side loop). Range hard-capped at 90 days.
+  async getTraffic(
+    userId: string, tunnelId: string,
+    fromISO: string, toISO: string, bucket: "5m" | "1h" | "1d",
+  ) {
+    const [t] = await sql<{ id: string }[]>`
+      SELECT id FROM tunnels
+      WHERE id = ${tunnelId} AND user_id = ${userId} AND deleted_at IS NULL`;
+    if (!t) throw new NotFoundException("tunnel not found");
+
+    const from = new Date(fromISO), to = new Date(toISO);
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime())) {
+      throw new BadRequestException("from/to must be ISO datetimes");
+    }
+    if (to <= from) throw new BadRequestException("to must be > from");
+    const spanMs = to.getTime() - from.getTime();
+    if (spanMs > 90 * 24 * 60 * 60 * 1000) {
+      throw new BadRequestException("range cannot exceed 90 days");
+    }
+
+    const interval =
+      bucket === "1d" ? "1 day" :
+      bucket === "1h" ? "1 hour" :
+      "5 minutes";
+    const bucketMs =
+      bucket === "1d" ? 86_400_000 :
+      bucket === "1h" ? 3_600_000 :
+      300_000;
+
+    const rows = await sql<{ ts: Date; rx: string; tx: string }[]>`
+      SELECT date_bin(${interval}::interval, bucket_start, TIMESTAMPTZ 'epoch') AS ts,
+             SUM(rx_bytes)::text AS rx,
+             SUM(tx_bytes)::text AS tx
+      FROM bandwidth_usage
+      WHERE tunnel_id = ${tunnelId}
+        AND bucket_start >= ${from.toISOString()}
+        AND bucket_start <  ${to.toISOString()}
+      GROUP BY ts ORDER BY ts`;
+
+    const samples = rows.map((r) => ({
+      ts: r.ts.toISOString(),
+      rx_bytes: Number(r.rx),
+      tx_bytes: Number(r.tx),
+    }));
+    const totalRx = samples.reduce((s, r) => s + r.rx_bytes, 0);
+    const totalTx = samples.reduce((s, r) => s + r.tx_bytes, 0);
+    return { samples, totalRx, totalTx, bucketMs, from: fromISO, to: toISO };
+  }
+
   // Edit description (only field currently editable). Trim + 300-char cap +
   // treat empty string as NULL to match the create-tunnel path.
   async updateDescription(userId: string, tunnelId: string, description: string | null) {

@@ -5,6 +5,8 @@ import {
   reconcileAllGateways,
   runBillingTick,
   pruneConnectionEvents,
+  sampleAllGateways,
+  pruneTrafficSamples,
 } from "@vpnhub/provisioning";
 
 const QUEUE = "internal";
@@ -16,6 +18,9 @@ const BILLING_EVERY_MS = Number(
   process.env.BILLING_INTERVAL_MS ?? 60 * 60 * 1000,
 ); // hourly tick by default
 const BILLING_STARTUP_DELAY_MS = 30_000;
+const TRAFFIC_SAMPLE_MS = Number(process.env.TRAFFIC_SAMPLE_MS ?? 5 * 60 * 1000);
+const TRAFFIC_STARTUP_DELAY_MS = 15_000;
+const TRAFFIC_RETENTION_DAYS = Number(process.env.TRAFFIC_RETENTION_DAYS ?? 90);
 
 const processor: Processor = async (job) => {
   switch (job.name) {
@@ -54,6 +59,34 @@ async function runBilling(reason: string) {
     console.error("[billing] FAILED:", (e as Error).message);
   } finally {
     billingRunning = false;
+  }
+}
+
+let trafficRunning = false;
+async function runTrafficSample(reason: string) {
+  if (trafficRunning) {
+    console.log(`[traffic] skipped (${reason}) — previous run still in progress`);
+    return;
+  }
+  trafficRunning = true;
+  const t0 = Date.now();
+  try {
+    const r = await sampleAllGateways();
+    console.log(
+      `[traffic] ${reason}: gateways=${r.gatewaysOk}/${r.gatewaysOk + r.gatewaysFailed} ` +
+        `tunnels=${r.tunnels} inserted=${r.inserted} (${Date.now() - t0}ms)`,
+    );
+    if (r.errors.length) console.error("[traffic] errors:", r.errors.join(" | "));
+    // Retention prune once daily at 03:00 UTC (matches conn-prune convention).
+    const nowU = new Date();
+    if (nowU.getUTCHours() === 3 && nowU.getUTCMinutes() < 5) {
+      const n = await pruneTrafficSamples(TRAFFIC_RETENTION_DAYS);
+      if (n > 0) console.log(`[traffic-prune] removed ${n} samples older than ${TRAFFIC_RETENTION_DAYS}d`);
+    }
+  } catch (e) {
+    console.error("[traffic] FAILED:", (e as Error).message);
+  } finally {
+    trafficRunning = false;
   }
 }
 
@@ -124,6 +157,17 @@ async function main() {
       `(startup +${(BILLING_STARTUP_DELAY_MS / 1000) | 0}s)`,
   );
 
+  // Traffic sampler — every 5 min, populates bandwidth_usage for portal graph.
+  setTimeout(() => void runTrafficSample("startup"), TRAFFIC_STARTUP_DELAY_MS);
+  const trafficTimer = setInterval(
+    () => void runTrafficSample("interval"),
+    TRAFFIC_SAMPLE_MS,
+  );
+  console.log(
+    `[traffic] scheduled every ${(TRAFFIC_SAMPLE_MS / 1000) | 0}s ` +
+      `(startup +${(TRAFFIC_STARTUP_DELAY_MS / 1000) | 0}s, retention ${TRAFFIC_RETENTION_DAYS}d)`,
+  );
+
   // Connection-events retention prune — daily.
   const pruneConn = async () => {
     try {
@@ -140,6 +184,7 @@ async function main() {
   const shutdown = async () => {
     clearInterval(driftTimer);
     clearInterval(billingTimer);
+    clearInterval(trafficTimer);
     clearInterval(connPruneTimer);
     await worker.close();
     connection.disconnect();

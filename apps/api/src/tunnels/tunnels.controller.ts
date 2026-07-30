@@ -113,6 +113,24 @@ export class TunnelsController {
     }
   }
 
+  // GET /v1/tunnels/:id/traffic?from=ISO&to=ISO&bucket=5m|1h|1d
+  // Owner-only time-series aggregation for the portal chart.
+  @Get(":id/traffic")
+  async traffic(
+    @Req() req: { user: { userId: string } } & { query: { from?: string; to?: string; bucket?: string } },
+    @Param("id") id: string,
+  ) {
+    const q = req.query ?? {};
+    const from = q.from ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const to = q.to ?? new Date().toISOString();
+    const bucket = q.bucket === "1h" ? "1h" : q.bucket === "1d" ? "1d" : "5m";
+    try {
+      return await this.tunnels.getTraffic(req.user.userId, id, from, to, bucket);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
   // PATCH /v1/tunnels/:id — edit mutable metadata (description). Owner-only.
   @Patch(":id")
   @HttpCode(200)

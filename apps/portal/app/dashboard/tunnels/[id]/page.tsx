@@ -10,6 +10,7 @@ import { decryptSecret } from "@vpnhub/shared";
 import TunnelActions from "./actions-client";
 import ConnInfo from "./copy-field-client";
 import EditableDescription from "./description-client";
+import TunnelTraffic from "./traffic-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -172,6 +173,8 @@ export default async function TunnelDetail({ params }: Params) {
           </div>
         </div>
       </div>
+
+      <TunnelTraffic tunnelId={id} />
 
       <TunnelActions
         tunnelId={id}
