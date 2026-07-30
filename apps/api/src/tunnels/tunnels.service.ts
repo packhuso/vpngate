@@ -99,6 +99,23 @@ export class TunnelsService {
     }));
   }
 
+  // Edit description (only field currently editable). Trim + 300-char cap +
+  // treat empty string as NULL to match the create-tunnel path.
+  async updateDescription(userId: string, tunnelId: string, description: string | null) {
+    const cleaned = (description ?? "").toString().slice(0, 300).trim() || null;
+    const rows = await sql`
+      UPDATE tunnels
+      SET description = ${cleaned}
+      WHERE id = ${tunnelId} AND user_id = ${userId} AND deleted_at IS NULL
+      RETURNING id, description`;
+    if (rows.length === 0) throw new NotFoundException("tunnel not found");
+    await sql`INSERT INTO audit_logs (actor_type, actor_id, action,
+        resource_type, resource_id, success, metadata)
+      VALUES ('user', ${userId}, 'tunnel.description_update', 'tunnel',
+        ${tunnelId}, true, ${JSON.stringify({ description: cleaned })}::jsonb)`;
+    return { id: tunnelId, description: cleaned };
+  }
+
   // Server-side connectivity test: ping the tunnel's peer (client) from the
   // gateway VM that hosts it, over the tunnel itself (private IP), not the
   // internet. Tells the customer "is my VPN client actually online and reachable

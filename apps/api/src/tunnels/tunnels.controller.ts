@@ -6,6 +6,7 @@ import {
   Get,
   HttpCode,
   Param,
+  Patch,
   Post,
   Req,
   Res,
@@ -107,6 +108,23 @@ export class TunnelsController {
     const count = Number.isFinite(c) && c > 0 ? Math.min(Math.floor(c), 10) : undefined;
     try {
       return await this.tunnels.pingTunnel(req.user.userId, id, count);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  // PATCH /v1/tunnels/:id — edit mutable metadata (description). Owner-only.
+  @Patch(":id")
+  @HttpCode(200)
+  async patch(
+    @Req() req: { user: { userId: string } },
+    @Param("id") id: string,
+    @Body() body: { description?: string | null },
+  ) {
+    try {
+      return await this.tunnels.updateDescription(
+        req.user.userId, id, body?.description ?? null,
+      );
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     }

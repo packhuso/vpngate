@@ -9,6 +9,7 @@ import { sql } from "@vpnhub/db";
 import { decryptSecret } from "@vpnhub/shared";
 import TunnelActions from "./actions-client";
 import ConnInfo from "./copy-field-client";
+import EditableDescription from "./description-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -118,9 +119,7 @@ export default async function TunnelDetail({ params }: Params) {
             {isOnline ? "● Online" : "○ Offline"}
           </span>
         </div>
-        {t.description && (
-          <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 4 }}>{t.description}</p>
-        )}
+        <EditableDescription tunnelId={id} initial={t.description} />
         <p className="page-subtitle mono" style={{ fontSize: 12 }}>
           {id} · private {t.private_ip} · {endpoint} · next billing {fmtDate(t.next_billing_at)}
         </p>
