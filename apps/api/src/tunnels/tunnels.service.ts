@@ -130,18 +130,21 @@ export class TunnelsService {
       bucket === "1h" ? 3_600_000 :
       300_000;
 
-    const rows = await sql<{ ts: Date; rx: string; tx: string }[]>`
-      SELECT date_bin(${interval}::interval, bucket_start, TIMESTAMPTZ 'epoch') AS ts,
+    const rows = await sql<{ ts: string; rx: string; tx: string }[]>`
+      SELECT to_char(
+               date_bin(${interval}::interval, bucket_start, TIMESTAMPTZ 'epoch') AT TIME ZONE 'UTC',
+               'YYYY-MM-DD"T"HH24:MI:SS"Z"'
+             ) AS ts,
              SUM(rx_bytes)::text AS rx,
              SUM(tx_bytes)::text AS tx
       FROM bandwidth_usage
       WHERE tunnel_id = ${tunnelId}
         AND bucket_start >= ${from.toISOString()}
         AND bucket_start <  ${to.toISOString()}
-      GROUP BY ts ORDER BY ts`;
+      GROUP BY 1 ORDER BY 1`;
 
     const samples = rows.map((r) => ({
-      ts: r.ts.toISOString(),
+      ts: r.ts,
       rx_bytes: Number(r.rx),
       tx_bytes: Number(r.tx),
     }));
