@@ -13,6 +13,8 @@ export * from "./admin-grant";
 export * from "./frr-sync";
 export * from "./change-tier";
 export * from "./traffic-sampler";
+export { enqueueEmailEvents } from "./email/enqueue";
+export { dispatchEmailEvents } from "./email/dispatcher";
 export {
   cidrContains,
   cidrsOverlap,

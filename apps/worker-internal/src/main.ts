@@ -7,6 +7,8 @@ import {
   pruneConnectionEvents,
   sampleAllGateways,
   pruneTrafficSamples,
+  enqueueEmailEvents,
+  dispatchEmailEvents,
 } from "@vpnhub/provisioning";
 
 const QUEUE = "internal";
@@ -21,6 +23,9 @@ const BILLING_STARTUP_DELAY_MS = 30_000;
 const TRAFFIC_SAMPLE_MS = Number(process.env.TRAFFIC_SAMPLE_MS ?? 5 * 60 * 1000);
 const TRAFFIC_STARTUP_DELAY_MS = 15_000;
 const TRAFFIC_RETENTION_DAYS = Number(process.env.TRAFFIC_RETENTION_DAYS ?? 90);
+const EMAIL_ENQUEUE_MS = Number(process.env.EMAIL_ENQUEUE_MS ?? 30_000);
+const EMAIL_DISPATCH_MS = Number(process.env.EMAIL_DISPATCH_MS ?? 60_000);
+const EMAIL_STARTUP_DELAY_MS = 45_000;
 
 const processor: Processor = async (job) => {
   switch (job.name) {
@@ -87,6 +92,52 @@ async function runTrafficSample(reason: string) {
     console.error("[traffic] FAILED:", (e as Error).message);
   } finally {
     trafficRunning = false;
+  }
+}
+
+let emailEnqueueRunning = false;
+async function runEmailEnqueue(reason: string) {
+  if (emailEnqueueRunning) {
+    console.log(`[email-enqueue] skipped (${reason}) — previous run still in progress`);
+    return;
+  }
+  emailEnqueueRunning = true;
+  const t0 = Date.now();
+  try {
+    const r = await enqueueEmailEvents();
+    if (r.enqueued || r.skipped) {
+      console.log(
+        `[email-enqueue] ${reason}: scanned=${r.scanned} enqueued=${r.enqueued} skipped=${r.skipped} (${Date.now() - t0}ms)`,
+      );
+    }
+  } catch (e) {
+    console.error("[email-enqueue] FAILED:", (e as Error).message);
+  } finally {
+    emailEnqueueRunning = false;
+  }
+}
+
+let emailDispatchRunning = false;
+async function runEmailDispatch(reason: string) {
+  if (emailDispatchRunning) {
+    console.log(`[email-dispatch] skipped (${reason}) — previous run still in progress`);
+    return;
+  }
+  emailDispatchRunning = true;
+  const t0 = Date.now();
+  try {
+    const r = await dispatchEmailEvents();
+    if (r.processed) {
+      const tag = r.dryRun ? "dry-run" : "live";
+      console.log(
+        `[email-dispatch:${tag}] ${reason}: processed=${r.processed} sent=${r.sent} failed=${r.failed} (${Date.now() - t0}ms)`,
+      );
+      if (r.errors.length) console.error("[email-dispatch] errors:", r.errors.slice(0, 5).join(" | "));
+    }
+  } catch (e) {
+    console.error("[email-dispatch] FAILED:", (e as Error).message);
+  } finally {
+    emailDispatchRunning = false;
   }
 }
 
@@ -168,6 +219,26 @@ async function main() {
       `(startup +${(TRAFFIC_STARTUP_DELAY_MS / 1000) | 0}s, retention ${TRAFFIC_RETENTION_DAYS}d)`,
   );
 
+  // Email notifications — enqueuer scans audit_logs, dispatcher drains queue.
+  // Dry-run by default (EMAIL_ENABLED != "true") so it's safe to deploy before
+  // Resend is configured; queue fills, [email-dispatch:dry-run] logs what
+  // would be sent, no network calls to Resend.
+  setTimeout(() => void runEmailEnqueue("startup"), EMAIL_STARTUP_DELAY_MS);
+  const emailEnqueueTimer = setInterval(
+    () => void runEmailEnqueue("interval"),
+    EMAIL_ENQUEUE_MS,
+  );
+  setTimeout(() => void runEmailDispatch("startup"), EMAIL_STARTUP_DELAY_MS + 5_000);
+  const emailDispatchTimer = setInterval(
+    () => void runEmailDispatch("interval"),
+    EMAIL_DISPATCH_MS,
+  );
+  console.log(
+    `[email] enqueue every ${(EMAIL_ENQUEUE_MS / 1000) | 0}s, ` +
+      `dispatch every ${(EMAIL_DISPATCH_MS / 1000) | 0}s ` +
+      `(mode=${process.env.EMAIL_ENABLED === "true" ? "live" : "dry-run"})`,
+  );
+
   // Connection-events retention prune — daily.
   const pruneConn = async () => {
     try {
@@ -185,6 +256,8 @@ async function main() {
     clearInterval(driftTimer);
     clearInterval(billingTimer);
     clearInterval(trafficTimer);
+    clearInterval(emailEnqueueTimer);
+    clearInterval(emailDispatchTimer);
     clearInterval(connPruneTimer);
     await worker.close();
     connection.disconnect();
