@@ -144,3 +144,5 @@ html, body {
 .page-title    { font-size: 24px; font-weight: 600; letter-spacing: -0.025em; color: var(--color-text); margin: 0; }
 .page-subtitle { font-size: 14px; color: var(--color-text-muted); margin-top: 4px; }
 .section-title { font-size: 16px; font-weight: 600; color: var(--color-text); margin: 0; }
+
+@keyframes spin { to { transform: rotate(360deg); } }

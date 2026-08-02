@@ -241,7 +241,7 @@ export default function AdminGateways() {
           <p className="page-subtitle">Routing check — BGP session, WG peers, prefix-list</p>
         </div>
         <button onClick={load} disabled={busy} className="btn btn-secondary" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <RefreshCw size={14} className={busy ? "spin" : ""} /> Refresh
+          <RefreshCw size={14} style={busy ? { animation: "spin 1s linear infinite" } : undefined} /> Refresh
         </button>
       </header>
 
@@ -311,7 +311,6 @@ export default function AdminGateways() {
           })}
         </div>
       )}
-      <style jsx>{`.spin { animation: spin 1s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }
