@@ -74,11 +74,19 @@ export function classifyAudit(
   return null;
 }
 
+const UUID_RE = /^[0-9a-f-]{36}$/i;
+
 function extractTargetUser(row: AuditRow): string | null {
   const md = (row.metadata ?? {}) as Record<string, unknown>;
-  const candidates = [md.userId, md.user_id, md.targetUserId, md.target_user_id];
+  // Real emitted keys we've observed: `grantedTo` (admin grant flows),
+  // `userId` (some notify calls), plus the resource pointer when the
+  // resource itself IS the user (wallet.adjust → resource_type='user').
+  const candidates = [
+    md.userId, md.user_id, md.targetUserId, md.target_user_id, md.grantedTo,
+    row.resource_type === "user" ? row.resource_id : null,
+  ];
   for (const c of candidates) {
-    if (typeof c === "string" && /^[0-9a-f-]{36}$/i.test(c)) return c;
+    if (typeof c === "string" && UUID_RE.test(c)) return c;
   }
   return null;
 }

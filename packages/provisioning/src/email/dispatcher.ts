@@ -179,9 +179,13 @@ function actionLabel(action: string, md: Record<string, unknown>): string {
     case "ip.unassign":         return `ปลด IP ${s(md.ip)} จาก tunnel ${s(md.from ?? md.tunnelId)}`;
     case "ipblock.assign":      return `ผูก block ${s(md.blockId ?? md.block)} เข้า tunnel`;
     case "ipblock.unassign":    return `ปลด block ${s(md.blockId ?? md.block)} จาก tunnel`;
-    case "wallet.adjust":       return `แอดมินปรับ wallet: ${md.delta_satang && Number(md.delta_satang) > 0 ? "+" : ""}฿${satang(md.delta_satang)}${md.reason ? ` (${s(md.reason)})` : ""}`;
+    case "wallet.adjust": {
+      const amt = md.amountSatang ?? md.delta_satang; // real key vs my test key
+      const sign = amt != null && Number(amt) > 0 ? "+" : "";
+      return `แอดมินปรับ wallet: ${sign}฿${satang(amt)}${md.reason ? ` (${s(md.reason)})` : ""}`;
+    }
     case "ip.admin_grant":      return `แอดมิน grant IP: ${s(md.ip)}`;
-    case "ipblock.admin_grant": return `แอดมิน grant IP block: ${s(md.block)}`;
+    case "ipblock.admin_grant": return `แอดมิน grant IP block: ${s(md.cidr ?? md.block)}`;
     case "billing.suspend":     return `Tunnel ถูกระงับเนื่องจากยอดคงเหลือไม่พอ`;
     case "billing.cancel":      return `Tunnel ถูกยกเลิกอัตโนมัติ`;
     default:                    return action;
