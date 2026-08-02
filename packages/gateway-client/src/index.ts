@@ -140,6 +140,28 @@ export class GatewayClient {
       }[];
     }>("GET", "/stats/peers");
   }
+  /** BGP session state + managed VPN-POOLS prefix-list contents. Read-only.
+   *  Backs the admin Gateways page — one call per gateway to render the row. */
+  getRoutingStatus() {
+    return this.request<{
+      collectedAt: string;
+      bgpAvailable: boolean;
+      localAs?: number;
+      routerId?: string;
+      neighbors: {
+        neighbor: string;
+        remoteAs: number;
+        state: string;
+        uptimeSeconds: number;
+        pfxRcd: number;
+        pfxSnt: number;
+      }[];
+      prefixListName: string;
+      prefixListCount: number;
+      prefixEntries: { seq: number; action: string; prefix: string; ge?: number; le?: number }[];
+      warnings?: string[];
+    }>("GET", "/routing/status");
+  }
   createPeer(input: CreatePeerInput, idempotencyKey: string) {
     return this.request<{ status: string; peerId: string; interface: string }>(
       "POST",

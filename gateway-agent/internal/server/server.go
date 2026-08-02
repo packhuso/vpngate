@@ -94,6 +94,9 @@ func (s *Server) Handler() http.Handler {
 	// FRR — replace a managed prefix-list (e.g. VPN-POOLS) atomically
 	mux.HandleFunc("POST /v1/frr/prefix-list/sync", s.idempotent(s.handlePrefixListSync))
 
+	// Routing status (read-only) — BGP peers + VPN-POOLS prefix-list contents
+	mux.HandleFunc("GET /v1/routing/status", s.handleRoutingStatus)
+
 	// Stats (polled by worker every 30s)
 	mux.HandleFunc("GET /v1/stats", s.handleStats)
 	mux.HandleFunc("GET /v1/stats/peers", s.handlePeerStats)

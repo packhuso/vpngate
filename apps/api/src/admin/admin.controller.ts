@@ -944,4 +944,126 @@ export class AdminController {
       ORDER BY created_at DESC LIMIT ${lim}`;
     return { logs: rows };
   }
+
+  // ── gateways: routing check (BGP + WG peer counts + prefix-list) ──────
+  // GET /v1/admin/gateways — list every gateway with a live routing snapshot.
+  // Offline / unreachable agents fall through with reachable=false so the row
+  // still renders (admin needs to see "gw-2 is dead" too, not just healthy ones).
+  @Get("gateways")
+  async listGateways() {
+    const gws = await sql<
+      {
+        id: string;
+        hostname: string;
+        status: string;
+        bgp_enabled: boolean;
+        wg_endpoint: string | null;
+        agent_endpoint: string;
+        agent_ca_cert: string;
+        agent_token: string;
+      }[]
+    >`SELECT id::text, hostname, status, bgp_enabled,
+             wg_endpoint, agent_endpoint, agent_ca_cert, agent_token
+       FROM vpn_gateways ORDER BY hostname`;
+
+    const now = Date.now();
+    const HANDSHAKE_ONLINE_MS = 3 * 60 * 1000; // WG rekey is 2min; 3min = comfortable margin
+
+    const rows = await Promise.all(
+      gws.map(async (gw) => {
+        const base = {
+          id: gw.id,
+          hostname: gw.hostname,
+          status: gw.status,
+          bgpEnabled: gw.bgp_enabled,
+          wgEndpoint: gw.wg_endpoint,
+        };
+        if (gw.status !== "active") {
+          return { ...base, reachable: false, error: `db status=${gw.status}` };
+        }
+        try {
+          const client = buildGatewayClient(gw);
+          const [peers, routing] = await Promise.all([
+            client.listPeers(),
+            client.getRoutingStatus(),
+          ]);
+          const online = peers.peers.filter(
+            (p) => p.lastHandshake && now - new Date(p.lastHandshake).getTime() < HANDSHAKE_ONLINE_MS,
+          ).length;
+          const bgpUp = routing.neighbors.filter((n) => n.state === "Established").length;
+          return {
+            ...base,
+            reachable: true,
+            peersTotal: peers.peers.length,
+            peersOnline: online,
+            bgpAvailable: routing.bgpAvailable,
+            bgpNeighborsUp: bgpUp,
+            bgpNeighborsTotal: routing.neighbors.length,
+            prefixCount: routing.prefixListCount,
+          };
+        } catch (e) {
+          return { ...base, reachable: false, error: (e as Error).message };
+        }
+      }),
+    );
+    return { gateways: rows };
+  }
+
+  // GET /v1/admin/gateways/:hostname/routing — full routing detail for one gateway.
+  // Hostname (not id) in the path keeps URLs human-readable in the portal.
+  @Get("gateways/:hostname/routing")
+  async gatewayRouting(@Param("hostname") hostname: string) {
+    const [gw] = await sql<
+      {
+        id: string;
+        hostname: string;
+        status: string;
+        agent_endpoint: string;
+        agent_ca_cert: string;
+        agent_token: string;
+      }[]
+    >`SELECT id::text, hostname, status, agent_endpoint, agent_ca_cert, agent_token
+       FROM vpn_gateways WHERE hostname = ${hostname}`;
+    if (!gw) throw new BadRequestException(`gateway ${hostname} not found`);
+    if (gw.status !== "active") {
+      throw new BadRequestException(`gateway ${hostname} is ${gw.status}`);
+    }
+    try {
+      const client = buildGatewayClient(gw);
+      const [peers, routing] = await Promise.all([
+        client.listPeers(),
+        client.getRoutingStatus(),
+      ]);
+      const now = Date.now();
+      const HANDSHAKE_ONLINE_MS = 3 * 60 * 1000;
+      const peerRows = peers.peers.map((p) => ({
+        publicKey: p.publicKey,
+        privateIp: p.privateIp,
+        publicIps: p.publicIps,
+        online:
+          !!p.lastHandshake &&
+          now - new Date(p.lastHandshake).getTime() < HANDSHAKE_ONLINE_MS,
+        lastHandshake: p.lastHandshake,
+        lastEndpoint: p.lastEndpoint,
+      }));
+      return {
+        hostname: gw.hostname,
+        collectedAt: routing.collectedAt,
+        bgp: {
+          available: routing.bgpAvailable,
+          localAs: routing.localAs,
+          routerId: routing.routerId,
+          neighbors: routing.neighbors,
+        },
+        prefixList: {
+          name: routing.prefixListName,
+          entries: routing.prefixEntries,
+        },
+        peers: peerRows,
+        warnings: routing.warnings ?? [],
+      };
+    } catch (e) {
+      throw new BadRequestException(`agent error: ${(e as Error).message}`);
+    }
+  }
 }
