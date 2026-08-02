@@ -137,6 +137,9 @@ func parseBgpSummary(raw []byte, out *routingStatus) {
 var prefixLine = regexp.MustCompile(`^\s*seq\s+(\d+)\s+(\S+)\s+(\S+)(?:\s+ge\s+(\d+))?(?:\s+le\s+(\d+))?`)
 
 func parsePrefixList(text string) []prefixEntry {
+	// Some FRR versions print each entry twice (e.g. once per daemon output
+	// prefix). Dedupe by seq so the UI shows the real prefix-list contents.
+	seen := make(map[int]bool)
 	var out []prefixEntry
 	for _, line := range strings.Split(text, "\n") {
 		m := prefixLine.FindStringSubmatch(line)
@@ -144,6 +147,10 @@ func parsePrefixList(text string) []prefixEntry {
 			continue
 		}
 		seq, _ := strconv.Atoi(m[1])
+		if seen[seq] {
+			continue
+		}
+		seen[seq] = true
 		e := prefixEntry{Seq: seq, Action: m[2], Prefix: m[3]}
 		if m[4] != "" {
 			e.Ge, _ = strconv.Atoi(m[4])
