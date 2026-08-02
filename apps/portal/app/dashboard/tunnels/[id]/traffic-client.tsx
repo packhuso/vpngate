@@ -45,11 +45,12 @@ function fmtMbps(bytes: number, ms: number): number {
   return (bytes * 8) / (ms / 1000) / 1_000_000;
 }
 
+const MONTH_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 function fmtTs(iso: string, bucketMs: number): string {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, "0");
-  if (bucketMs >= 86_400_000) return `${d.getMonth() + 1}/${p(d.getDate())}`;
-  if (bucketMs >= 3_600_000) return `${p(d.getDate())} ${p(d.getHours())}:00`;
+  if (bucketMs >= 86_400_000) return `${p(d.getDate())} ${MONTH_SHORT[d.getMonth()]}`;
+  if (bucketMs >= 3_600_000) return `${p(d.getDate())} ${MONTH_SHORT[d.getMonth()]} ${p(d.getHours())}:00`;
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 

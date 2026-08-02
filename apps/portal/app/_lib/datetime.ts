@@ -5,9 +5,11 @@ const TZ = "Asia/Bangkok";
 
 function parts(s: string | Date): Record<string, string> {
   const d = new Date(s);
-  const fmt = new Intl.DateTimeFormat("en-CA", {
+  // month: "short" → Jan/Feb/…/Dec — unambiguous against day/year (design
+  // preference: numeric YYYY-MM-DD is hard to scan when eyeballing many rows).
+  const fmt = new Intl.DateTimeFormat("en-GB", {
     timeZone: TZ,
-    year: "numeric", month: "2-digit", day: "2-digit",
+    year: "numeric", month: "short", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
   });
   const out: Record<string, string> = {};
@@ -15,23 +17,23 @@ function parts(s: string | Date): Record<string, string> {
   return out;
 }
 
-/** "YYYY-MM-DD" (Bangkok). */
+/** "DD Mon YYYY" (Bangkok) — e.g. "03 Aug 2026". */
 export function fmtDate(s?: string | Date | null): string {
   if (!s) return "—";
   const p = parts(s);
-  return `${p.year}-${p.month}-${p.day}`;
+  return `${p.day} ${p.month} ${p.year}`;
 }
 
-/** "YYYY-MM-DD HH:MM" (Bangkok). */
+/** "DD Mon YYYY HH:MM" (Bangkok). */
 export function fmtDateTime(s?: string | Date | null): string {
   if (!s) return "—";
   const p = parts(s);
-  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+  return `${p.day} ${p.month} ${p.year} ${p.hour}:${p.minute}`;
 }
 
-/** "MM-DD HH:MM:SS" (Bangkok) — compact for logs. */
+/** "DD Mon HH:MM:SS" (Bangkok) — compact for logs. */
 export function fmtLogTime(s?: string | Date | null): string {
   if (!s) return "";
   const p = parts(s);
-  return `${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
+  return `${p.day} ${p.month} ${p.hour}:${p.minute}:${p.second}`;
 }
