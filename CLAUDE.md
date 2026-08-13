@@ -37,6 +37,9 @@ lives in `~/.claude/projects/-opt-vpnhub-app/memory/project_vpnhub.md`.
                         portal.myip.in.th → cloudflared tunnel → :3080 + :3001/v1
     vpnhub-gw-1         10.2.1.2    active WG gateway VM, endpoint 185.213.250.90:443
                         AS 65001, peers Mikrotik AS 65000, runs vpnhub-agent + FRR
+    vpnhub-gre-1        10.2.1.7    active GRE gateway VM, public 185.213.250.91/29
+                        AS 65002, peers Mikrotik AS 65000, runs vpnhub-agent + FRR + nftables
+                        packhuso has NOPASSWD sudo here (unlike gw-1)
     vpnhub-gw-2/3       10.2.1.4/5  DB rows only, VMs deleted (OpenVPN/SSTP was ripped out)
     mikrotik-asbr       10.2.1.1 / 185.213.250.89  ASBR, ROS API :8728
 
@@ -115,6 +118,42 @@ pushes via `POST /v1/frr/prefix-list/sync`, atomically). BGP: local AS 65001,
 neighbor 185.213.250.89 (Mikrotik AS 65000). Admin page `/admin/gateways`
 shows live BGP + WG peers + prefix-list contents — new agent endpoint
 `GET /v1/routing/status` backs it.
+
+## GRE gateway (vpnhub-gre-1) — infra config not in git
+
+Rebuilding a GRE gateway from scratch needs these on the box (they're **not**
+in provisioning scripts yet — add to `infra/gateway/provision-gre.sh` when
+you write it):
+
+**FRR** — must be `redistribute kernel` (not `static`) because our agent inserts
+routes with `ip route add ... proto static` at the kernel level, not via
+vtysh's own static-route RIB:
+
+    router bgp <asn>
+      address-family ipv4 unicast
+        redistribute kernel
+        neighbor <mikrotik-ip> prefix-list VPN-POOLS out
+
+If you set `redistribute static` instead, BGP announces nothing and Mikrotik
+shows the session up with `PfxSnt=0` — silently broken.
+
+**nftables** — TCP MSS clamp for GRE tunnels. Without it, PMTUD blackholes
+kill TCP flows on paths that filter ICMP:
+
+    table inet vpnhub {
+      chain forward_gre_mss {
+        type filter hook forward priority mangle; policy accept;
+        meta iifname "gre-*" tcp flags syn tcp option maxseg size set rt mtu
+        meta oifname "gre-*" tcp flags syn tcp option maxseg size set rt mtu
+      }
+    }
+
+Persisted in `/etc/nftables.conf`, service enabled.
+
+**Netplan** — default route MUST go via the public interface (ens19), not the
+LAN one, or customer traffic gets NAT'd by Mikrotik LAN interface. Also
+disable cloud-init network config (`/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg`
+= `network: {config: disabled}`) so netplan changes persist.
 
 ## Traffic sampler
 

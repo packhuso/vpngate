@@ -24,6 +24,11 @@ import (
 
 const greIfPrefix = "gre-"
 
+// Floor for tc HTB rate. Anything below ~1 Mbit starves TCP handshakes and
+// looks like the tunnel is broken. Control plane always sends tierRateKbit()
+// (≥ 160000) but a mis-scoped admin call shouldn't be able to brick a peer.
+const greShapingMinKbit = 1000
+
 var peerIdRe = regexp.MustCompile(`^[a-zA-Z0-9]{4,32}$`)
 
 type greCreateReq struct {
@@ -143,6 +148,11 @@ func (s *Server) handleCreateGrePeer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.SpeedLimitKbit > 0 {
+		if req.SpeedLimitKbit < greShapingMinKbit {
+			writeErr(w, http.StatusBadRequest, "BAD_SPEED",
+				fmt.Sprintf("speedLimitKbit must be 0 (unshaped) or >= %d", greShapingMinKbit))
+			return
+		}
 		if err := applyGreShaping(ifname, req.PeerId, req.SpeedLimitKbit); err != nil {
 			writeErr(w, http.StatusInternalServerError, "SHAPING", err.Error())
 			return
@@ -214,6 +224,11 @@ func (s *Server) handlePatchGrePeer(w http.ResponseWriter, r *http.Request) {
 		if *req.SpeedLimitKbit <= 0 {
 			removeGreShaping(ifname, peerId)
 		} else {
+			if *req.SpeedLimitKbit < greShapingMinKbit {
+				writeErr(w, http.StatusBadRequest, "BAD_SPEED",
+					fmt.Sprintf("speedLimitKbit must be 0 or >= %d", greShapingMinKbit))
+				return
+			}
 			if err := applyGreShaping(ifname, peerId, *req.SpeedLimitKbit); err != nil {
 				writeErr(w, http.StatusInternalServerError, "SHAPING", err.Error())
 				return

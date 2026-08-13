@@ -60,16 +60,48 @@ function isPlausibleHost(s: string): boolean {
 
 /** Resolve a domain (or return the IP if already numeric). Prefers IPv4;
  *  GRE is IPv4-only in this stack. Throws ValidationError on NXDOMAIN so
- *  a customer typo surfaces at create time, not silently 12 h later. */
+ *  a customer typo surfaces at create time, not silently 12 h later.
+ *
+ *  SSRF guard: reject any resolved address that lands in RFC1918, loopback,
+ *  link-local, CGNAT, or multicast — a customer setting their domain to
+ *  something that resolves to 10.2.1.3 / 127.0.0.1 / 169.254.169.254 would
+ *  otherwise cause the gateway to `ip tunnel add remote <our-infra>`,
+ *  attempting to send our own decrypted traffic back into internal networks.
+ *  Kernel would drop most, but the tunnel row + forwarded routes still exist. */
 export async function resolveHost(host: string): Promise<string> {
-  if (IPV4_RE.test(host)) return host;
-  try {
-    const addrs = await dns.resolve4(host);
-    if (!addrs.length) throw ValidationError(`${host} has no A record`);
-    return addrs[0];
-  } catch (e) {
-    throw ValidationError(`cannot resolve ${host}: ${(e as Error).message}`);
+  const resolved = IPV4_RE.test(host) ? host : await (async () => {
+    try {
+      const addrs = await dns.resolve4(host);
+      if (!addrs.length) throw ValidationError(`${host} has no A record`);
+      return addrs[0];
+    } catch (e) {
+      throw ValidationError(`cannot resolve ${host}: ${(e as Error).message}`);
+    }
+  })();
+  if (!isPublicIPv4(resolved)) {
+    throw ValidationError(
+      `${host} resolves to ${resolved}, which is not a public routable address`,
+    );
   }
+  return resolved;
+}
+
+/** True iff addr is a public routable IPv4 — rejects loopback (127.0.0.0/8),
+ *  RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16), CGNAT
+ *  (100.64/10), multicast (224/4), reserved (240/4), and 0.0.0.0/8. */
+function isPublicIPv4(ip: string): boolean {
+  const o = ip.split(".").map(Number);
+  if (o.length !== 4 || o.some((n) => !Number.isFinite(n) || n < 0 || n > 255)) return false;
+  const [a, b] = o;
+  if (a === 0) return false;                      // 0.0.0.0/8
+  if (a === 10) return false;                     // 10/8
+  if (a === 127) return false;                    // loopback
+  if (a === 169 && b === 254) return false;       // link-local (incl. cloud metadata)
+  if (a === 172 && b >= 16 && b <= 31) return false; // 172.16/12
+  if (a === 192 && b === 168) return false;       // 192.168/16
+  if (a === 100 && b >= 64 && b <= 127) return false; // 100.64/10 CGNAT
+  if (a >= 224) return false;                     // multicast + reserved
+  return true;
 }
 
 /** Allocate the next free /30 in the gateway's private_subnet by looking at
