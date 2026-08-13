@@ -371,14 +371,20 @@ export class TunnelsService {
         ...singles.map((ip) => `${ip}/32`),
         ...blockCidrs,
       ];
+      // RouterOS 7 GRE parameter naming:
+      //   key= (single 32-bit, applied both directions) — NOT ikey/okey
+      //     (those are Linux ip-tunnel names; using them on Mikrotik errors out)
+      //   mtu=1476 — GRE overhead 24 bytes, prevents inner fragmentation
+      //   clamp-tcp-mss=yes — mandatory in practice; without it TCP flows past
+      //     the tunnel hit PMTUD blackholes on paths that filter ICMP.
       const lines: string[] = [
         `# VPN Hub GRE tunnel — ${t.name}`,
         `# Server (VPN Hub): ${remote} · customer end: ${custEnd}`,
-        `# Paste into Mikrotik terminal or /import file=<name>.rsc`,
+        `# Paste into Mikrotik terminal or /import file=<name>.rsc  (RouterOS 7.x)`,
         ``,
         `/interface gre`,
         `add name=${ifName} remote-address=${remote} local-address=0.0.0.0 \\`,
-        `    keepalive=10s,3${greKey ? ` ikey=${greKey} okey=${greKey}` : ""}`,
+        `    keepalive=10s,3 mtu=1476 clamp-tcp-mss=yes${greKey ? ` key=${greKey}` : ""}`,
         ``,
         `/ip address`,
         `add address=${custEnd}/30 interface=${ifName}`,
