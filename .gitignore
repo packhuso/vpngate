@@ -16,3 +16,5 @@ coverage/
 
 # Claude Code local settings (machine-local; may capture secrets in permission rules)
 .claude/settings.local.json
+__pycache__/
+router_conf/
