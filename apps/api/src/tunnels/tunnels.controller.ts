@@ -186,29 +186,33 @@ export class TunnelsController {
     }
   }
 
-  // PATCH /v1/tunnels/:id — edit mutable metadata (description, and for GRE
-  // tunnels the customer endpoint host). Owner-only.
+  // PATCH /v1/tunnels/:id — edit mutable metadata (name, description, and
+  // for GRE tunnels the customer endpoint host). Owner-only. All three
+  // fields can be updated in one call; each is applied only when its key is
+  // present in the body.
   @Patch(":id")
   @HttpCode(200)
   async patch(
     @Req() req: { user: { userId: string } },
     @Param("id") id: string,
-    @Body() body: { description?: string | null; remoteEndpointHost?: string },
+    @Body() body: {
+      name?: string;
+      description?: string | null;
+      remoteEndpointHost?: string;
+    },
   ) {
     try {
+      const result: Record<string, unknown> = {};
+      if (body?.name !== undefined) {
+        result.name = await this.tunnels.updateName(req.user.userId, id, body.name);
+      }
       // Endpoint change (GRE) is a side-effecting operation — resolves DNS,
-      // pushes to the agent, writes an audit row. Handle before description.
+      // pushes to the agent, writes an audit row.
       if (body?.remoteEndpointHost !== undefined) {
         const trimmed = String(body.remoteEndpointHost).trim();
         if (!trimmed) throw new BadRequestException("endpoint cannot be empty");
         try {
-          const r = await updateGreEndpoint(id, req.user.userId, trimmed);
-          if (body.description !== undefined) {
-            await this.tunnels.updateDescription(
-              req.user.userId, id, body.description,
-            );
-          }
-          return { endpoint: r };
+          result.endpoint = await updateGreEndpoint(id, req.user.userId, trimmed);
         } catch (e) {
           if (e instanceof ProvisionError) {
             throw new BadRequestException({ code: e.code, message: e.message });
@@ -216,9 +220,15 @@ export class TunnelsController {
           throw e;
         }
       }
-      return await this.tunnels.updateDescription(
-        req.user.userId, id, body?.description ?? null,
-      );
+      if (body?.description !== undefined) {
+        result.description = await this.tunnels.updateDescription(
+          req.user.userId, id, body.description,
+        );
+      }
+      if (Object.keys(result).length === 0) {
+        throw new BadRequestException("nothing to update");
+      }
+      return result;
     } catch (e) {
       if (e instanceof BadRequestException) throw e;
       throw new BadRequestException((e as Error).message);

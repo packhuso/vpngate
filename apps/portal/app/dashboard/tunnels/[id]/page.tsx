@@ -10,6 +10,7 @@ import { decryptSecret } from "@vpnhub/shared";
 import TunnelActions from "./actions-client";
 import ConnInfo from "./copy-field-client";
 import EditableDescription from "./description-client";
+import EditableName from "./name-client";
 import GreEndpointEditor from "./gre-endpoint-client";
 import TunnelTraffic from "./traffic-client";
 
@@ -145,7 +146,7 @@ export default async function TunnelDetail({ params }: Params) {
           <ArrowLeft size={14} strokeWidth={2} /> Dashboard
         </Link>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-          <h1 className="page-title">{t.name}</h1>
+          <EditableName tunnelId={id} initial={t.name} />
           <span className={`badge ${protoMeta.badge}`}>{protoMeta.label}</span>
           <span className={`badge ${statusBadge}`}>{t.status}</span>
           <span className={`badge ${isOnline ? "badge-success" : "badge-neutral"}`}>

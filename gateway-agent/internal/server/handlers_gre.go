@@ -321,8 +321,10 @@ func listRoutesOnDev(dev string) ([]string, error) {
 }
 
 func listGrePeers() ([]grePeer, error) {
-	// `ip -d -j link show type gre` — -d gives us linkinfo.info_data.remote/local/ikey
-	out, err := exec.Command("ip", "-d", "-j", "link", "show", "type", "gre").Output()
+	// `-d` → linkinfo.info_data.{remote,local,ikey}; `-s` → stats64 block
+	// (rx/tx bytes+packets). Without -s the JSON has no stats64 field and
+	// the traffic sampler always reads 0 bytes.
+	out, err := exec.Command("ip", "-d", "-s", "-j", "link", "show", "type", "gre").Output()
 	if err != nil {
 		return nil, fmt.Errorf("ip link show: %w", err)
 	}

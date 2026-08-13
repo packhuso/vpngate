@@ -176,6 +176,44 @@ export class TunnelsService {
   }
 
   // Edit description (only field currently editable). Trim + 300-char cap +
+  // Rename tunnel. Same validation as create (config-file identifier chars
+  // only) + per-user uniqueness. Downloads are re-rendered from the current
+  // name on the fly so no downstream state to sync; audit_logs keep the old
+  // name in their metadata snapshots (historical accuracy).
+  async updateName(userId: string, tunnelId: string, newName: string) {
+    const trimmed = newName.trim();
+    if (!/^[A-Za-z0-9_-]{1,100}$/.test(trimmed)) {
+      throw new BadRequestException(
+        "ชื่อใช้ได้เฉพาะ a-z A-Z 0-9 - _ เท่านั้น (ภาษาไทยให้ใส่ในช่อง Description)",
+      );
+    }
+    const [existing] = await sql<{ name: string }[]>`
+      SELECT name FROM tunnels
+      WHERE id = ${tunnelId} AND user_id = ${userId} AND deleted_at IS NULL`;
+    if (!existing) throw new NotFoundException("tunnel not found");
+    if (existing.name === trimmed) return { id: tunnelId, name: trimmed };
+    // Per-user unique (case-insensitive). The DB has a matching partial index
+    // so a concurrent rename to the same value on another tunnel would still
+    // be rejected — this check just yields a friendly error before the SQL
+    // constraint would fire.
+    const dup = await sql`
+      SELECT 1 FROM tunnels
+      WHERE user_id = ${userId} AND lower(name) = lower(${trimmed})
+        AND id <> ${tunnelId} AND deleted_at IS NULL LIMIT 1`;
+    if (dup.length > 0) {
+      throw new BadRequestException(`ชื่อ "${trimmed}" ถูกใช้แล้ว`);
+    }
+    await sql`
+      UPDATE tunnels SET name = ${trimmed}, updated_at = NOW()
+      WHERE id = ${tunnelId} AND user_id = ${userId} AND deleted_at IS NULL`;
+    await sql`INSERT INTO audit_logs (actor_type, actor_id, action,
+        resource_type, resource_id, success, metadata)
+      VALUES ('user', ${userId}, 'tunnel.rename', 'tunnel',
+        ${tunnelId}, true,
+        ${JSON.stringify({ oldName: existing.name, newName: trimmed })}::jsonb)`;
+    return { id: tunnelId, name: trimmed };
+  }
+
   // treat empty string as NULL to match the create-tunnel path.
   async updateDescription(userId: string, tunnelId: string, description: string | null) {
     const cleaned = (description ?? "").toString().slice(0, 300).trim() || null;
