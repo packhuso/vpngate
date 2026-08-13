@@ -45,6 +45,17 @@ function fmtMbps(bytes: number, ms: number): number {
   return (bytes * 8) / (ms / 1000) / 1_000_000;
 }
 
+/** Human-friendly bit-rate string. Auto-picks unit — bits, kbps, Mbps, Gbps —
+ *  so a tunnel doing 25 kbps of keepalives doesn't show as "0.0 Mbps" and a
+ *  10 Gbps flow doesn't render as "10000 Mbps". */
+function fmtRate(mbps: number): string {
+  if (mbps <= 0) return "0";
+  if (mbps < 0.001) return `${(mbps * 1000_000).toFixed(0)} bps`;
+  if (mbps < 1) return `${(mbps * 1000).toFixed(1)} kbps`;
+  if (mbps < 1000) return `${mbps.toFixed(1)} Mbps`;
+  return `${(mbps / 1000).toFixed(2)} Gbps`;
+}
+
 const MONTH_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 function fmtTs(iso: string, bucketMs: number): string {
   const d = new Date(iso);
@@ -142,7 +153,7 @@ export default function TunnelTraffic({ tunnelId }: { tunnelId: string }) {
       <div style={{ marginTop: 14, display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
         <StatCard icon={<ArrowDownToLine size={14} strokeWidth={2} />} label="Total RX" value={data ? fmtBytes(data.totalRx) : "—"} color="#0ea5e9" />
         <StatCard icon={<ArrowUpFromLine size={14} strokeWidth={2} />} label="Total TX" value={data ? fmtBytes(data.totalTx) : "—"} color="#16a34a" />
-        <StatCard icon={<Gauge size={14} strokeWidth={2} />} label="Peak" value={peakMbps > 0 ? `${peakMbps.toFixed(1)} Mbps` : "—"} color="var(--color-primary)" />
+        <StatCard icon={<Gauge size={14} strokeWidth={2} />} label="Peak" value={peakMbps > 0 ? fmtRate(peakMbps) : "—"} color="var(--color-primary)" />
       </div>
 
       {err && <p style={{ color: "var(--color-danger)", fontSize: 12, marginTop: 8 }}>⚠ {err}</p>}
@@ -178,7 +189,7 @@ export default function TunnelTraffic({ tunnelId }: { tunnelId: string }) {
                 contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: 6, fontSize: 12 }}
                 labelStyle={{ color: "var(--color-text)" }}
                 formatter={((v: unknown, name: unknown) => [
-                  `${Number(v).toFixed(2)} Mbps`,
+                  fmtRate(Number(v)),
                   String(name) === "rx_mbps" ? "Download (RX)" : "Upload (TX)",
                 ]) as never}
               />
