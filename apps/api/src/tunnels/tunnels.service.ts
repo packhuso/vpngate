@@ -371,12 +371,16 @@ export class TunnelsService {
         ...singles.map((ip) => `${ip}/32`),
         ...blockCidrs,
       ];
-      // RouterOS 7 GRE parameter naming:
-      //   key= (single 32-bit, applied both directions) — NOT ikey/okey
-      //     (those are Linux ip-tunnel names; using them on Mikrotik errors out)
-      //   mtu=1476 — GRE overhead 24 bytes, prevents inner fragmentation
-      //   clamp-tcp-mss=yes — mandatory in practice; without it TCP flows past
-      //     the tunnel hit PMTUD blackholes on paths that filter ICMP.
+      // RouterOS GRE parameters — verified valid ones only:
+      //   mtu=1476              GRE overhead 24 bytes; prevents fragmentation.
+      //   clamp-tcp-mss=yes     Mandatory in practice — without it TCP flows
+      //                         past the tunnel hit PMTUD blackholes.
+      //   keepalive=10s,3       Peer down-detection so failover / DNS
+      //                         re-resolve can trigger.
+      // NOT emitted:
+      //   key= / ikey= / okey=  Mikrotik does NOT implement GRE key (RFC 2890)
+      //                         at all. Attempting it errors "unknown param".
+      //                         Our Linux side matches (keyless both ways).
       const lines: string[] = [
         `# VPN Hub GRE tunnel — ${t.name}`,
         `# Server (VPN Hub): ${remote} · customer end: ${custEnd}`,
@@ -384,13 +388,14 @@ export class TunnelsService {
         ``,
         `/interface gre`,
         `add name=${ifName} remote-address=${remote} local-address=0.0.0.0 \\`,
-        `    keepalive=10s,3 mtu=1476 clamp-tcp-mss=yes${greKey ? ` key=${greKey}` : ""}`,
+        `    keepalive=10s,3 mtu=1476 clamp-tcp-mss=yes`,
         ``,
         `/ip address`,
         `add address=${custEnd}/30 interface=${ifName}`,
         ``,
         `# Public IPs assigned to this tunnel — routed via the GRE interface`,
       ];
+      void greKey; // reserved for future — GRE key not usable with Mikrotik
       for (const r of routes) {
         lines.push(`/ip route add dst-address=${r} gateway=${ifName}`);
       }

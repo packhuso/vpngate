@@ -304,12 +304,18 @@ export async function activateGreTunnel(tunnelId: string): Promise<void> {
   );
 
   const client = buildGatewayClient(t);
+  // NOTE: Mikrotik RouterOS GRE (RFC 2784) does NOT support the key field
+  // (RFC 2890). Linux GRE in keyed mode strictly refuses keyless packets, so
+  // if we set a key here Mikrotik-side traffic silently drops. We keep the
+  // gre_key column in DB (still allocated per tunnel for future use / to keep
+  // a monotonic identifier) but pass 0 on the wire → keyless GRE both ways.
+  const _unusedKey = Number(t.gre_key);
   await client.createGrePeer(
     {
       peerId,
       remoteIp: t.remote_ip,
       localIp: t.pub_ip ?? undefined,
-      greKey: Number(t.gre_key),
+      greKey: 0,
       tunnelLocalIp: gwEndCidr,
       tunnelRemoteIp: custEnd,
       publicIps: routableCidrs,

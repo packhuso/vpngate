@@ -163,8 +163,6 @@ export default async function TunnelDetail({ params }: Params) {
               <span className="mono">{t.private_ip}/30</span>
               <span style={{ color: "var(--color-text-muted)" }}>Customer tunnel IP:</span>
               <span className="mono">{greCustomerEnd}/30</span>
-              <span style={{ color: "var(--color-text-muted)" }}>GRE key:</span>
-              <span className="mono">{t.gre_key ?? "—"}</span>
               <span style={{ color: "var(--color-text-muted)" }}>Endpoint (your router):</span>
               <span className="mono">
                 {t.remote_endpoint_host ?? "—"}
