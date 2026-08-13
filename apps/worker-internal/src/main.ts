@@ -9,6 +9,8 @@ import {
   pruneTrafficSamples,
   enqueueEmailEvents,
   dispatchEmailEvents,
+  monitorGreTunnels,
+  refreshStaleGreEndpoints,
 } from "@vpnhub/provisioning";
 
 const QUEUE = "internal";
@@ -26,6 +28,9 @@ const TRAFFIC_RETENTION_DAYS = Number(process.env.TRAFFIC_RETENTION_DAYS ?? 90);
 const EMAIL_ENQUEUE_MS = Number(process.env.EMAIL_ENQUEUE_MS ?? 30_000);
 const EMAIL_DISPATCH_MS = Number(process.env.EMAIL_DISPATCH_MS ?? 60_000);
 const EMAIL_STARTUP_DELAY_MS = 45_000;
+const GRE_MONITOR_MS = Number(process.env.GRE_MONITOR_MS ?? 60_000);
+const GRE_REFRESH_MS = Number(process.env.GRE_REFRESH_MS ?? 60 * 60 * 1000);
+const GRE_STARTUP_DELAY_MS = 20_000;
 
 const processor: Processor = async (job) => {
   switch (job.name) {
@@ -141,6 +146,47 @@ async function runEmailDispatch(reason: string) {
   }
 }
 
+let greMonitorRunning = false;
+async function runGreMonitor(reason: string) {
+  if (greMonitorRunning) {
+    console.log(`[gre-monitor] skipped (${reason}) — previous run still in progress`);
+    return;
+  }
+  greMonitorRunning = true;
+  const t0 = Date.now();
+  try {
+    const r = await monitorGreTunnels();
+    if (r.checked || r.errors.length) {
+      console.log(
+        `[gre-monitor] ${reason}: checked=${r.checked} reachable=${r.reachable} ` +
+          `unreachable=${r.unreachable} reresolves=${r.reresolves} ipChanges=${r.ipChanges} (${Date.now() - t0}ms)`,
+      );
+      if (r.errors.length) console.error("[gre-monitor] errors:", r.errors.slice(0, 5).join(" | "));
+    }
+  } catch (e) {
+    console.error("[gre-monitor] FAILED:", (e as Error).message);
+  } finally {
+    greMonitorRunning = false;
+  }
+}
+
+let greRefreshRunning = false;
+async function runGreRefresh(reason: string) {
+  if (greRefreshRunning) return;
+  greRefreshRunning = true;
+  try {
+    const r = await refreshStaleGreEndpoints(60);
+    if (r.refreshed || r.errors.length) {
+      console.log(`[gre-refresh] ${reason}: refreshed=${r.refreshed} changed=${r.changed}`);
+      if (r.errors.length) console.error("[gre-refresh] errors:", r.errors.slice(0, 5).join(" | "));
+    }
+  } catch (e) {
+    console.error("[gre-refresh] FAILED:", (e as Error).message);
+  } finally {
+    greRefreshRunning = false;
+  }
+}
+
 let driftRunning = false;
 async function runDrift(reason: string) {
   if (driftRunning) {
@@ -239,6 +285,24 @@ async function main() {
       `(mode=${process.env.EMAIL_ENABLED === "true" ? "live" : "dry-run"})`,
   );
 
+  // GRE health check — pings each active GRE peer; 3 fails → DNS re-resolve.
+  setTimeout(() => void runGreMonitor("startup"), GRE_STARTUP_DELAY_MS);
+  const greMonitorTimer = setInterval(
+    () => void runGreMonitor("interval"),
+    GRE_MONITOR_MS,
+  );
+  // Proactive DNS refresh — catches DNS moves while the tunnel is UP.
+  setTimeout(() => void runGreRefresh("startup"), GRE_STARTUP_DELAY_MS + 30_000);
+  const greRefreshTimer = setInterval(
+    () => void runGreRefresh("interval"),
+    GRE_REFRESH_MS,
+  );
+  console.log(
+    `[gre] monitor every ${(GRE_MONITOR_MS / 1000) | 0}s, ` +
+      `refresh every ${(GRE_REFRESH_MS / 1000) | 0}s ` +
+      `(startup +${(GRE_STARTUP_DELAY_MS / 1000) | 0}s)`,
+  );
+
   // Connection-events retention prune — daily.
   const pruneConn = async () => {
     try {
@@ -258,6 +322,8 @@ async function main() {
     clearInterval(trafficTimer);
     clearInterval(emailEnqueueTimer);
     clearInterval(emailDispatchTimer);
+    clearInterval(greMonitorTimer);
+    clearInterval(greRefreshTimer);
     clearInterval(connPruneTimer);
     await worker.close();
     connection.disconnect();

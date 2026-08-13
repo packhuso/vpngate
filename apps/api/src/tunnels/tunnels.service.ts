@@ -35,13 +35,18 @@ export class TunnelsService {
     return { status: "provisioning", ...r };
   }
 
-  // GET /v1/tunnels/options — protocols offerable right now. WG only.
+  // GET /v1/tunnels/options — protocols offerable right now. Data-driven:
+  // WG needs a gateway with wg_public_key set; GRE needs one with 'gre' in
+  // supported_protocols. The portal hides protocols the backend can't serve.
   async availableProtocols() {
-    const [r] = await sql<{ wg: boolean }[]>`
-      SELECT COALESCE(bool_or(wg_public_key IS NOT NULL), false) AS wg
+    const [r] = await sql<{ wg: boolean; gre: boolean }[]>`
+      SELECT
+        COALESCE(bool_or(wg_public_key IS NOT NULL), false) AS wg,
+        COALESCE(bool_or('gre' = ANY(supported_protocols)), false) AS gre
       FROM vpn_gateways WHERE status = 'active'`;
     const protocols: string[] = [];
     if (r?.wg) protocols.push("wireguard");
+    if (r?.gre) protocols.push("gre");
     return {
       protocols,
       tiers: [
@@ -218,18 +223,24 @@ export class TunnelsService {
       {
         name: string;
         status: string;
+        protocol: string;
         private_ip: string;
-        wg_private_key_encrypted: string;
-        gw_pub: string;
-        wg_endpoint: string;
-        wg_port: number;
+        wg_private_key_encrypted: string | null;
+        gw_pub: string | null;
+        wg_endpoint: string | null;
+        wg_port: number | null;
         private_subnet: string;
+        gre_key: number | null;
+        remote_endpoint_host: string | null;
+        gw_public_ip: string | null;
       }[]
     >`
-      SELECT t.name, t.status, host(t.private_ip) AS private_ip,
+      SELECT t.name, t.status, t.protocol, host(t.private_ip) AS private_ip,
              t.wg_private_key_encrypted,
              g.wg_public_key AS gw_pub, g.wg_endpoint, g.wg_port,
-             g.private_subnet::text AS private_subnet
+             g.private_subnet::text AS private_subnet,
+             t.gre_key, t.remote_endpoint_host,
+             host(g.bgp_router_id) AS gw_public_ip
       FROM tunnels t JOIN vpn_gateways g ON g.id = t.gateway_id
       WHERE t.id = ${tunnelId} AND t.user_id = ${userId}
         AND t.deleted_at IS NULL`;
@@ -237,6 +248,23 @@ export class TunnelsService {
     if (t.status === "provisioning") {
       throw new BadRequestException("tunnel is still provisioning, try again in a moment");
     }
+    if (t.protocol === "gre") {
+      return this.buildGreConfig(t, tunnelId, format);
+    }
+    // Past this point, WG columns are required — narrow here so downstream code
+    // stays clean instead of sprinkling `!` on every field.
+    if (
+      !t.wg_private_key_encrypted || !t.gw_pub ||
+      !t.wg_endpoint || t.wg_port == null
+    ) {
+      throw new BadRequestException("tunnel is missing wireguard fields (data corruption?)");
+    }
+    const wg = {
+      privateKey: decryptSecret(t.wg_private_key_encrypted),
+      gwPub: t.gw_pub,
+      endpointHost: t.wg_endpoint,
+      endpointPort: t.wg_port,
+    };
 
     // Single IPs route as /32; a sold block routes as its CIDR (e.g. a /25),
     // NOT 128 separate /32s — compact, correct, and keeps the config/QR small.
@@ -262,15 +290,14 @@ export class TunnelsService {
     const routable = [...singles.map((ip) => `${ip}/32`), ...blockCidrs];
     const allowedIPs = [t.private_subnet, ...routable].join(", ");
 
-    const privateKey = decryptSecret(t.wg_private_key_encrypted);
     const safeName = t.name.replace(/[^A-Za-z0-9_-]/g, "_") || "tunnel";
 
     if (format === "mikrotik") {
       const conf = buildMikrotikScript({
-        privateKey,
-        gwPub: t.gw_pub,
-        endpointHost: t.wg_endpoint,
-        endpointPort: t.wg_port,
+        privateKey: wg.privateKey,
+        gwPub: wg.gwPub,
+        endpointHost: wg.endpointHost,
+        endpointPort: wg.endpointPort,
         privateIp: t.private_ip,
         privateSubnet: t.private_subnet,
         singles,
@@ -281,16 +308,115 @@ export class TunnelsService {
 
     const conf =
       `[Interface]\n` +
-      `PrivateKey = ${privateKey}\n` +
+      `PrivateKey = ${wg.privateKey}\n` +
       `Address = ${t.private_ip}/32\n` +
       `\n` +
       `[Peer]\n` +
-      `PublicKey = ${t.gw_pub}\n` +
-      `Endpoint = ${t.wg_endpoint}:${t.wg_port}\n` +
+      `PublicKey = ${wg.gwPub}\n` +
+      `Endpoint = ${wg.endpointHost}:${wg.endpointPort}\n` +
       `AllowedIPs = ${allowedIPs}\n` +
       `PersistentKeepalive = 25\n`;
 
     return { filename: `${safeName}.conf`, conf };
+  }
+
+  // GRE variant: same input shape as WG getConfig; renders a Mikrotik `.rsc`
+  // that sets up the customer's side of the tunnel. The `text` fallback is a
+  // human-readable summary — WireGuard-native tools don't apply here.
+  private async buildGreConfig(
+    t: {
+      name: string;
+      protocol: string;
+      private_ip: string;
+      gre_key: number | null;
+      remote_endpoint_host: string | null;
+      gw_public_ip: string | null;
+      private_subnet: string;
+    },
+    tunnelId: string,
+    format: "wireguard" | "mikrotik",
+  ) {
+    const gwEndInt = ((): number => {
+      const o = t.private_ip.split(".").map(Number);
+      return ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0;
+    })();
+    const custEnd = [
+      (gwEndInt + 1) >>> 24 & 255,
+      (gwEndInt + 1) >>> 16 & 255,
+      (gwEndInt + 1) >>> 8 & 255,
+      (gwEndInt + 1) & 255,
+    ].join(".");
+
+    const singles = (
+      await sql<{ ip: string }[]>`
+        SELECT host(ip_address) AS ip FROM public_ips
+        WHERE tunnel_id = ${tunnelId} AND block_id IS NULL AND status = 'allocated'
+        ORDER BY ip_address`
+    ).map((r) => r.ip);
+    const blockCidrs = (
+      await sql<{ cidr: string }[]>`
+        SELECT DISTINCT b.block::text AS cidr
+        FROM ip_blocks b JOIN public_ips p ON p.block_id = b.id
+        WHERE p.tunnel_id = ${tunnelId} AND p.status = 'allocated'
+        ORDER BY 1`
+    ).map((r) => r.cidr);
+
+    const safeName = t.name.replace(/[^A-Za-z0-9_-]/g, "_") || "tunnel";
+    const remote = t.gw_public_ip ?? "185.213.250.91"; // fallback if bgp_router_id missing
+    const greKey = Number(t.gre_key ?? 0);
+    const ifName = "gre-vpnhub";
+
+    if (format === "mikrotik") {
+      const routes = [
+        ...singles.map((ip) => `${ip}/32`),
+        ...blockCidrs,
+      ];
+      const lines: string[] = [
+        `# VPN Hub GRE tunnel — ${t.name}`,
+        `# Server (VPN Hub): ${remote} · customer end: ${custEnd}`,
+        `# Paste into Mikrotik terminal or /import file=<name>.rsc`,
+        ``,
+        `/interface gre`,
+        `add name=${ifName} remote-address=${remote} local-address=0.0.0.0 \\`,
+        `    keepalive=10s,3${greKey ? ` ikey=${greKey} okey=${greKey}` : ""}`,
+        ``,
+        `/ip address`,
+        `add address=${custEnd}/30 interface=${ifName}`,
+        ``,
+        `# Public IPs assigned to this tunnel — routed via the GRE interface`,
+      ];
+      for (const r of routes) {
+        lines.push(`/ip route add dst-address=${r} gateway=${ifName}`);
+      }
+      lines.push(
+        ``,
+        `# Suggested: run this script every 60s to auto-update the remote IP if`,
+        `# our DNS changes (mirrors the Mikrotik pattern from the user manual):`,
+        `# :local cloudDNS "gw1.myip.in.th"`,
+        `# :if ([/interface gre get ${ifName} running]) do={} else={`,
+        `#   :local newIp [:resolve $cloudDNS]`,
+        `#   :if ($newIp != [/interface gre get ${ifName} remote-address]) do={`,
+        `#     /interface gre set ${ifName} remote-address=$newIp`,
+        `#   }`,
+        `# }`,
+      );
+      return { filename: `${safeName}.mikrotik.rsc`, conf: lines.join("\n") + "\n" };
+    }
+
+    // Plain-text summary for non-Mikrotik consumers.
+    const conf =
+      `# VPN Hub GRE tunnel — ${t.name}\n` +
+      `#\n` +
+      `# Server IP (our end):     ${remote}\n` +
+      `# Server tunnel address:   ${t.private_ip}/30\n` +
+      `# Customer tunnel address: ${custEnd}/30\n` +
+      `# GRE key:                 ${greKey || "(none)"}\n` +
+      `# Remote endpoint on us:   ${t.remote_endpoint_host ?? "(not set)"}\n` +
+      `#\n` +
+      `# On Linux: ip tunnel add gre0 mode gre remote ${remote} local <your-ip>${greKey ? ` key ${greKey}` : ""}\n` +
+      `#           ip addr add ${custEnd}/30 dev gre0 && ip link set gre0 up\n` +
+      `# Then add routes for the public IPs you bought pointing at gre0.\n`;
+    return { filename: `${safeName}.gre.txt`, conf };
   }
 }
 

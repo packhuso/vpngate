@@ -26,6 +26,38 @@ export interface CreatePeerInput {
   speedLimitKbit?: number;
 }
 
+// ── GRE peer types ─────────────────────────────────────────
+export interface CreateGrePeerInput {
+  peerId: string;              // becomes gre-<peerId> interface name; 4-32 alnum
+  remoteIp: string;            // customer's public IP (from DNS resolve)
+  localIp?: string;            // this gateway's public IP (agent binds underlay)
+  greKey?: number;             // 32-bit; 0/omit = no key
+  tunnelLocalIp: string;       // CIDR, e.g. "10.100.0.1/30"
+  tunnelRemoteIp?: string;     // customer's tunnel endpoint (documentation)
+  publicIps?: string[];        // /32 or /Nn routes to point at this tunnel
+  mtu?: number;                // 0/omit → 1476
+}
+
+export interface PatchGrePeerInput {
+  remoteIp?: string;    // DNS re-resolve updates this
+  publicIps?: string[]; // full replacement — diff + apply
+}
+
+export interface GrePeer {
+  peerId: string;
+  interface: string;
+  remoteIp: string;
+  localIp: string;
+  greKey: number;
+  tunnelLocalIp: string;
+  tunnelRemoteIp: string;
+  publicIps: string[];
+  mtu: number;
+  operState: string;    // UP / DOWN / UNKNOWN
+  bytesRx: number;
+  bytesTx: number;
+}
+
 export interface Peer {
   peerId: string;
   publicKey: string;
@@ -162,6 +194,39 @@ export class GatewayClient {
       warnings?: string[];
     }>("GET", "/routing/status");
   }
+
+  // ── GRE tunnels ──────────────────────────────────────────
+  listGrePeers() {
+    return this.request<{ peers: GrePeer[] }>("GET", "/gre/peers");
+  }
+  getGrePeer(peerId: string) {
+    return this.request<GrePeer>("GET", `/gre/peers/${encodeURIComponent(peerId)}`);
+  }
+  createGrePeer(input: CreateGrePeerInput, idempotencyKey: string) {
+    return this.request<{ status: string; peerId: string; interface: string }>(
+      "POST",
+      "/gre/peers",
+      input,
+      idempotencyKey,
+    );
+  }
+  patchGrePeer(peerId: string, patch: PatchGrePeerInput, idempotencyKey: string) {
+    return this.request<{ status: string; peerId: string }>(
+      "PATCH",
+      `/gre/peers/${encodeURIComponent(peerId)}`,
+      patch,
+      idempotencyKey,
+    );
+  }
+  deleteGrePeer(peerId: string, idempotencyKey: string) {
+    return this.request<{ status: string; peerId: string }>(
+      "DELETE",
+      `/gre/peers/${encodeURIComponent(peerId)}`,
+      undefined,
+      idempotencyKey,
+    );
+  }
+
   createPeer(input: CreatePeerInput, idempotencyKey: string) {
     return this.request<{ status: string; peerId: string; interface: string }>(
       "POST",

@@ -77,7 +77,8 @@ export async function reconcileGateway(gatewayId: string): Promise<DriftReport> 
     ) cidrs ON true
     WHERE t.gateway_id = ${gw.id}
       AND t.deleted_at IS NULL
-      AND t.status = 'active'`;
+      AND t.status = 'active'
+      AND t.protocol = 'wireguard'`;
   const dbByPk = new Map(dbTunnels.map((t) => [t.wg_public_key, t]));
 
   // 1. For each DB tunnel: re-push if missing, OR reconcile allowed-IPs if

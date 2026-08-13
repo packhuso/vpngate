@@ -97,6 +97,13 @@ func (s *Server) Handler() http.Handler {
 	// Routing status (read-only) — BGP peers + VPN-POOLS prefix-list contents
 	mux.HandleFunc("GET /v1/routing/status", s.handleRoutingStatus)
 
+	// GRE tunnels (Plain GRE, RFC 2784/2890) — one interface per peer.
+	mux.HandleFunc("GET /v1/gre/peers", s.handleListGrePeers)
+	mux.HandleFunc("POST /v1/gre/peers", s.idempotent(s.handleCreateGrePeer))
+	mux.HandleFunc("GET /v1/gre/peers/{peerId}", s.handleGetGrePeer)
+	mux.HandleFunc("PATCH /v1/gre/peers/{peerId}", s.idempotent(s.handlePatchGrePeer))
+	mux.HandleFunc("DELETE /v1/gre/peers/{peerId}", s.idempotent(s.handleDeleteGrePeer))
+
 	// Stats (polled by worker every 30s)
 	mux.HandleFunc("GET /v1/stats", s.handleStats)
 	mux.HandleFunc("GET /v1/stats/peers", s.handlePeerStats)

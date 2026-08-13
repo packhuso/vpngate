@@ -13,8 +13,16 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import type { Response } from "express";
-import { ProvisionError, deleteTunnel, changeTunnelTier } from "@vpnhub/provisioning";
+import {
+  ProvisionError,
+  deleteTunnel,
+  changeTunnelTier,
+  provisionGreTunnel,
+  activateGreTunnel,
+  deleteGreTunnel,
+} from "@vpnhub/provisioning";
 import { SessionGuard } from "../auth/session.guard";
+import { sql } from "@vpnhub/db";
 import { TunnelsService } from "./tunnels.service";
 
 interface CreateTunnelBody {
@@ -22,7 +30,10 @@ interface CreateTunnelBody {
   name: string;
   description?: string;
   gatewayHostname?: string;
-  protocol?: "wireguard";
+  protocol?: "wireguard" | "gre";
+  // GRE-only — required when protocol === "gre". Domain (e.g. "my.dyn.com")
+  // or numeric IPv4. We resolve and cache the IP at create time.
+  remoteEndpointHost?: string;
 }
 
 @Controller("tunnels")
@@ -73,6 +84,49 @@ export class TunnelsController {
         "ชื่อใช้ได้เฉพาะ a-z A-Z 0-9 - _ เท่านั้น (ภาษาไทยให้ใส่ในช่อง Description)",
       );
     }
+    const protocol = body.protocol ?? "wireguard";
+    if (protocol === "gre") {
+      if (!body.remoteEndpointHost) {
+        throw new BadRequestException("remoteEndpointHost required for GRE tunnels");
+      }
+      try {
+        const r = await provisionGreTunnel({
+          userId: req.user.userId,
+          speedTier: body.speedTier,
+          name: body.name,
+          description: body.description,
+          gatewayHostname: body.gatewayHostname,
+          remoteEndpointHost: body.remoteEndpointHost,
+        });
+        // Push to agent async — reply to caller immediately with the ID.
+        // On agent failure the tunnel stays status='provisioning'; drift
+        // will re-push, or the user can delete + retry.
+        void activateGreTunnel(r.tunnelId).catch((e) => {
+          console.error(`[gre-activate] tunnel=${r.tunnelId}: ${(e as Error).message}`);
+        });
+        return {
+          tunnelId: r.tunnelId,
+          status: "provisioning",
+          gateway: r.gatewayHostname,
+          privateIp: r.gatewayEndIp,
+          protocol: "gre",
+          gre: {
+            peerId: r.peerId,
+            gatewayEndIp: r.gatewayEndIp,
+            customerEndIp: r.customerEndIp,
+            pointToPointCidr: r.pointToPointCidr,
+            greKey: r.greKey,
+            remoteEndpointHost: r.remoteEndpointHost,
+            remoteEndpointIp: r.remoteEndpointIp,
+          },
+        };
+      } catch (e) {
+        if (e instanceof ProvisionError) {
+          throw new BadRequestException({ code: e.code, message: e.message });
+        }
+        throw e;
+      }
+    }
     try {
       const r = await this.tunnels.provision({
         userId: req.user.userId,
@@ -80,7 +134,7 @@ export class TunnelsController {
         name: body.name,
         description: body.description,
         gatewayHostname: body.gatewayHostname,
-        protocol: body.protocol ?? "wireguard",
+        protocol: "wireguard",
       });
       return {
         tunnelId: r.tunnelId,
@@ -178,7 +232,17 @@ export class TunnelsController {
     @Req() req: { user: { userId: string } },
     @Param("id") id: string,
   ) {
+    // Route by protocol so GRE goes through its own cleanup (agent DELETE +
+    // interface removal). Both flows honour user ownership.
+    const [t] = await sql<{ protocol: string }[]>`
+      SELECT protocol FROM tunnels
+      WHERE id = ${id} AND user_id = ${req.user.userId} AND deleted_at IS NULL`;
+    if (!t) throw new BadRequestException("tunnel not found");
     try {
+      if (t.protocol === "gre") {
+        await deleteGreTunnel(id, req.user.userId);
+        return { deleted: true, protocol: "gre" };
+      }
       return await deleteTunnel(id, req.user.userId);
     } catch (e) {
       if (e instanceof ProvisionError) {

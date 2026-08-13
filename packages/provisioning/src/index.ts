@@ -16,6 +16,21 @@ export * from "./traffic-sampler";
 export { enqueueEmailEvents } from "./email/enqueue";
 export { dispatchEmailEvents } from "./email/dispatcher";
 export {
+  provisionGreTunnel,
+  activateGreTunnel,
+  deleteGreTunnel,
+  resolveGreEndpoint,
+  resolveHost,
+  peerIdFromTunnelId,
+  type CreateGreTunnelInput,
+  type CreateGreTunnelResult,
+} from "./gre";
+export {
+  monitorGreTunnels,
+  refreshStaleGreEndpoints,
+  type GreMonitorResult,
+} from "./gre-monitor";
+export {
   cidrContains,
   cidrsOverlap,
   isAligned,

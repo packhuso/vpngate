@@ -53,7 +53,8 @@ export async function sampleAllGateways(now: Date = new Date()): Promise<SampleR
     // Map peer pubkey → tunnel id for THIS gateway's active tunnels.
     const tunnels = await sql<{ id: string; wg_public_key: string }[]>`
       SELECT id, wg_public_key FROM tunnels
-      WHERE gateway_id = ${gw.id} AND deleted_at IS NULL`;
+      WHERE gateway_id = ${gw.id} AND deleted_at IS NULL
+        AND protocol = 'wireguard' AND wg_public_key IS NOT NULL`;
     const byPk = new Map(tunnels.map((t) => [t.wg_public_key, t.id]));
 
     for (const p of stats.peers) {
