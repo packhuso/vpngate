@@ -31,6 +31,14 @@ export function fmtDateTime(s?: string | Date | null): string {
   return `${p.day} ${p.month} ${p.year} ${p.hour}:${p.minute}`;
 }
 
+/** "DD Mon YYYY HH:MM:SS" (Bangkok) — full precision. Use when the second
+ *  matters (audit trail, DNS resolve timing, connection events). */
+export function fmtDateTimeSec(s?: string | Date | null): string {
+  if (!s) return "—";
+  const p = parts(s);
+  return `${p.day} ${p.month} ${p.year} ${p.hour}:${p.minute}:${p.second}`;
+}
+
 /** "DD Mon HH:MM:SS" (Bangkok) — compact for logs. */
 export function fmtLogTime(s?: string | Date | null): string {
   if (!s) return "";

@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import { fmtDate } from "../../../_lib/datetime";
+import { fmtDate, fmtDateTimeSec } from "../../../_lib/datetime";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import QRCode from "qrcode";
@@ -171,7 +171,7 @@ export default async function TunnelDetail({ params }: Params) {
               {t.remote_endpoint_resolved_at && (
                 <>
                   <span style={{ color: "var(--color-text-muted)" }}>Last DNS resolve:</span>
-                  <span>{fmtDate(t.remote_endpoint_resolved_at)}</span>
+                  <span>{fmtDateTimeSec(t.remote_endpoint_resolved_at)}</span>
                 </>
               )}
             </div>
