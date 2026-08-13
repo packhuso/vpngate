@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { fmtDateTime } from "../_lib/datetime";
-import { Plus, Trash2, FileDown, Settings2, Shield, Radar } from "lucide-react";
+import { Plus, Trash2, FileDown, Settings2, Shield, Radar, Cable } from "lucide-react";
 import PingDialog from "./tunnels/ping-dialog-client";
 import { notifyDataChanged, onDataChanged, confirmIpChange } from "../_components/refresh-bus";
 
@@ -36,6 +36,7 @@ interface AllowCell { protocol: string; tier: string; enabled: boolean }
 
 const PROTOCOLS = [
   { v: "wireguard", label: "WireGuard", icon: Shield, hint: "เร็ว, เบา, แนะนำ" },
+  { v: "gre", label: "GRE", icon: Cable, hint: "สำหรับ Mikrotik / router (ไม่ encrypt)" },
 ];
 
 const statusBadge = (s: string) =>
@@ -50,6 +51,8 @@ export default function TunnelsPanel() {
   const [description, setDescription] = useState("");
   const [tier, setTier] = useState("tier_100mb");
   const [protocol, setProtocol] = useState("wireguard");
+  // GRE-only: customer's endpoint (domain or IP). Ignored for other protocols.
+  const [remoteEndpointHost, setRemoteEndpointHost] = useState("");
   const [available, setAvailable] = useState<string[]>(["wireguard"]);
   const [speedPrices, setSpeedPrices] = useState<SpeedPrice[]>([]);
   const [allow, setAllow] = useState<AllowCell[]>([]);
@@ -106,24 +109,38 @@ export default function TunnelsPanel() {
       return;
     }
     const tierLabel = tiers.find((t) => t.v === tier)?.label ?? tier;
-    const protoLabel = "WireGuard";
+    const protoLabel = protocol === "gre" ? "GRE" : "WireGuard";
+    if (protocol === "gre") {
+      if (!remoteEndpointHost.trim()) {
+        setErr("กรอก endpoint host (domain หรือ IP) ของ router คุณ");
+        return;
+      }
+    }
+    const greNote = protocol === "gre"
+      ? `\nEndpoint ปลายทาง: ${remoteEndpointHost.trim()}\n` +
+        `⚠ GRE ไม่มี encryption — ทราฟฟิกวิ่งเปิดเผยบน internet`
+      : "";
     if (!confirm(
       `ยืนยันการสร้าง Tunnel\n\n` +
       `ชื่อ: ${name}\n` +
       `ชนิด: ${protoLabel}\n` +
-      `แพ็กเกจ: ${tierLabel}\n\n` +
+      `แพ็กเกจ: ${tierLabel}${greNote}\n\n` +
       `⚠ จะตัดเงินค่า subscription จาก wallet ทันที และไม่คืนเงิน`
     )) return;
     setBusy(true); setErr(null);
     try {
+      const body: Record<string, unknown> = {
+        name, description: description || undefined, speedTier: tier, protocol,
+      };
+      if (protocol === "gre") body.remoteEndpointHost = remoteEndpointHost.trim();
       const r = await fetch("/v1/tunnels", {
         method: "POST", credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, description: description || undefined, speedTier: tier, protocol }),
+        body: JSON.stringify(body),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.message?.message ?? j?.message ?? "failed");
-      setName(""); setDescription("");
+      setName(""); setDescription(""); setRemoteEndpointHost("");
       notifyDataChanged();
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
@@ -249,6 +266,22 @@ export default function TunnelsPanel() {
         <input className="input" placeholder="คำอธิบาย (ใส่ภาษาไทยได้ เช่น เราเตอร์บ้าน ชั้น 2) — ไม่บังคับ"
           value={description} onChange={(e) => setDescription(e.target.value)} maxLength={300}
           style={{ width: "100%", marginTop: 8 }} />
+        {protocol === "gre" && (
+          <div style={{ marginTop: 8 }}>
+            <input
+              className="input"
+              required
+              placeholder="Endpoint ของ router คุณ (เช่น home.dyndns.org หรือ 1.2.3.4)"
+              value={remoteEndpointHost}
+              onChange={(e) => setRemoteEndpointHost(e.target.value)}
+              maxLength={253}
+              style={{ width: "100%" }}
+            />
+            <span style={{ display: "block", fontSize: 11, color: "var(--color-text-muted)", marginTop: 4 }}>
+              ถ้า IP ของคุณเปลี่ยน (dynamic ISP) ให้ใช้ DDNS domain — server จะ resolve ใหม่อัตโนมัติเมื่อ tunnel ล่ม
+            </span>
+          </div>
+        )}
       </form>
       {err && <p style={{ color: "var(--color-danger)", fontSize: 13, marginBottom: 12 }}>⚠ {err}</p>}
 

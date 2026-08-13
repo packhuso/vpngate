@@ -38,16 +38,26 @@ export default async function TunnelDetail({ params }: Params) {
       created_at: Date;
       next_billing_at: Date;
       speed_tier: string;
+      remote_endpoint_host: string | null;
+      remote_endpoint_ip: string | null;
+      remote_endpoint_resolved_at: Date | null;
+      gre_key: number | null;
+      gw_public_ip: string | null;
     }[]
   >`
     SELECT t.name, t.description, t.status, t.protocol, host(t.private_ip) AS private_ip,
            t.wg_private_key_encrypted, g.wg_public_key AS gw_pub,
            g.wg_endpoint, g.wg_port, g.private_subnet::text AS private_subnet,
-           t.created_at, t.next_billing_at, t.speed_tier
+           t.created_at, t.next_billing_at, t.speed_tier,
+           t.remote_endpoint_host,
+           host(t.remote_endpoint_ip) AS remote_endpoint_ip,
+           t.remote_endpoint_resolved_at, t.gre_key,
+           host(g.bgp_router_id) AS gw_public_ip
     FROM tunnels t JOIN vpn_gateways g ON g.id = t.gateway_id
     WHERE t.id = ${id} AND t.user_id = ${sess.userId}
       AND t.deleted_at IS NULL`;
   if (!t) notFound();
+  const isGre = t.protocol === "gre";
 
   const pubIps = await sql<{ ip: string; block_id: string | null }[]>`
     SELECT host(ip_address) AS ip, block_id::text AS block_id FROM public_ips
@@ -81,12 +91,14 @@ export default async function TunnelDetail({ params }: Params) {
     : t.status === "provisioning" ? "badge-warning"
     : t.status === "suspended" ? "badge-danger" : "badge-neutral";
 
-  const protoMeta = { label: "WireGuard", badge: "badge-primary" };
+  const protoMeta = isGre
+    ? { label: "GRE", badge: "badge-warning" }
+    : { label: "WireGuard", badge: "badge-primary" };
 
-  // WireGuard config + QR
+  // WireGuard config + QR — skip entirely for GRE tunnels (no keys).
   let wgConf: string | null = null;
   let qrDataUrl: string | null = null;
-  if (t.gw_pub) {
+  if (!isGre && t.gw_pub) {
     const allowedIPs = [t.private_subnet, ...routableCidrs].join(", ");
     const privateKey = decryptSecret(t.wg_private_key_encrypted);
     wgConf =
@@ -104,7 +116,15 @@ export default async function TunnelDetail({ params }: Params) {
     }
   }
 
-  const endpoint = t.wg_endpoint ? `${t.wg_endpoint}:${t.wg_port}` : "—";
+  const endpoint = isGre
+    ? (t.gw_public_ip ? `${t.gw_public_ip} (GRE)` : "GRE")
+    : (t.wg_endpoint ? `${t.wg_endpoint}:${t.wg_port}` : "—");
+  // Derive customer-end IP for GRE display (gwEnd + 1 in the /30).
+  const greCustomerEnd = isGre ? ((): string => {
+    const o = t.private_ip.split(".").map(Number);
+    const n = (((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0) + 1;
+    return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
+  })() : "";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -130,8 +150,38 @@ export default async function TunnelDetail({ params }: Params) {
       <div className="card">
         <h2 className="section-title">Client config</h2>
         <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 2 }}>
-          ดาวน์โหลด .conf หรือสแกน QR ด้วย WireGuard mobile app · หรือใช้ Mikrotik script
+          {isGre
+            ? "ดาวน์โหลด Mikrotik .rsc — paste ใน terminal ของ router (customer end อยู่ข้างล่าง)"
+            : "ดาวน์โหลด .conf หรือสแกน QR ด้วย WireGuard mobile app · หรือใช้ Mikrotik script"}
         </p>
+        {isGre && (
+          <div className="card-compact" style={{ marginTop: 12, padding: 12, fontSize: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 12px" }}>
+              <span style={{ color: "var(--color-text-muted)" }}>Server (our end):</span>
+              <span className="mono">{t.gw_public_ip ?? "—"}</span>
+              <span style={{ color: "var(--color-text-muted)" }}>Server tunnel IP:</span>
+              <span className="mono">{t.private_ip}/30</span>
+              <span style={{ color: "var(--color-text-muted)" }}>Customer tunnel IP:</span>
+              <span className="mono">{greCustomerEnd}/30</span>
+              <span style={{ color: "var(--color-text-muted)" }}>GRE key:</span>
+              <span className="mono">{t.gre_key ?? "—"}</span>
+              <span style={{ color: "var(--color-text-muted)" }}>Endpoint (your router):</span>
+              <span className="mono">
+                {t.remote_endpoint_host ?? "—"}
+                {t.remote_endpoint_ip ? <span style={{ color: "var(--color-text-muted)" }}> → {t.remote_endpoint_ip}</span> : null}
+              </span>
+              {t.remote_endpoint_resolved_at && (
+                <>
+                  <span style={{ color: "var(--color-text-muted)" }}>Last DNS resolve:</span>
+                  <span>{fmtDate(t.remote_endpoint_resolved_at)}</span>
+                </>
+              )}
+            </div>
+            <p style={{ marginTop: 8, fontSize: 11, color: "var(--color-warning)" }}>
+              ⚠ GRE ไม่มี encryption — ทราฟฟิกวิ่งเปิดเผยบน internet
+            </p>
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: qrDataUrl ? "auto 1fr" : "1fr", gap: 24, marginTop: 16, alignItems: "start" }}>
           {qrDataUrl && (
@@ -144,15 +194,28 @@ export default async function TunnelDetail({ params }: Params) {
           )}
           <div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <a href={`/v1/tunnels/${id}/config`} download={`${t.name}.conf`} className="btn btn-primary">
-                <FileDown size={16} /> Download .conf
-              </a>
-              <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`} className="btn btn-secondary">
-                <FileDown size={16} /> Mikrotik script
-              </a>
+              {isGre ? (
+                <>
+                  <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`} className="btn btn-primary">
+                    <FileDown size={16} /> Mikrotik .rsc
+                  </a>
+                  <a href={`/v1/tunnels/${id}/config`} download={`${t.name}.gre.txt`} className="btn btn-secondary">
+                    <FileDown size={16} /> Plain text summary
+                  </a>
+                </>
+              ) : (
+                <>
+                  <a href={`/v1/tunnels/${id}/config`} download={`${t.name}.conf`} className="btn btn-primary">
+                    <FileDown size={16} /> Download .conf
+                  </a>
+                  <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`} className="btn btn-secondary">
+                    <FileDown size={16} /> Mikrotik script
+                  </a>
+                </>
+              )}
             </div>
 
-            {t.wg_endpoint && (
+            {!isGre && t.wg_endpoint && (
               <ConnInfo server={String(t.wg_endpoint)} port={`${t.wg_port ?? 51820}`} />
             )}
 
