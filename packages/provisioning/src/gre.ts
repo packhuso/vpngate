@@ -11,7 +11,7 @@
 // leaves a row in status='provisioning' that drift will reconcile.
 import { promises as dns } from "dns";
 import { sql } from "@vpnhub/db";
-import { type SpeedTier } from "@vpnhub/billing";
+import { type SpeedTier, tierRateKbit } from "@vpnhub/billing";
 import {
   InsufficientCredit,
   NoGatewayAvailable,
@@ -259,6 +259,7 @@ export async function activateGreTunnel(tunnelId: string): Promise<void> {
       gateway_id: string;
       gw_end: string;
       gre_key: number;
+      speed_tier: string;
       remote_ip: string;
       remote_host: string;
       subnet: string;
@@ -270,7 +271,8 @@ export async function activateGreTunnel(tunnelId: string): Promise<void> {
     }[]
   >`
     SELECT t.id::text, t.gateway_id::text, host(t.private_ip) AS gw_end,
-           t.gre_key, host(t.remote_endpoint_ip) AS remote_ip,
+           t.gre_key, t.speed_tier,
+           host(t.remote_endpoint_ip) AS remote_ip,
            t.remote_endpoint_host AS remote_host,
            g.private_subnet::text AS subnet, g.hostname,
            g.agent_endpoint, g.agent_ca_cert, g.agent_token,
@@ -319,6 +321,7 @@ export async function activateGreTunnel(tunnelId: string): Promise<void> {
       tunnelLocalIp: gwEndCidr,
       tunnelRemoteIp: custEnd,
       publicIps: routableCidrs,
+      speedLimitKbit: tierRateKbit(t.speed_tier),
     },
     `gre-activate-${tunnelId}`,
   );

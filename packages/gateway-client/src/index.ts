@@ -36,11 +36,13 @@ export interface CreateGrePeerInput {
   tunnelRemoteIp?: string;     // customer's tunnel endpoint (documentation)
   publicIps?: string[];        // /32 or /Nn routes to point at this tunnel
   mtu?: number;                // 0/omit → 1476
+  speedLimitKbit?: number;     // 0/omit = unshaped; else HTB cap both dirs
 }
 
 export interface PatchGrePeerInput {
-  remoteIp?: string;    // DNS re-resolve updates this
-  publicIps?: string[]; // full replacement — diff + apply
+  remoteIp?: string;       // DNS re-resolve updates this
+  publicIps?: string[];    // full replacement — diff + apply
+  speedLimitKbit?: number; // 0 removes cap, >0 updates rate
 }
 
 export interface GrePeer {

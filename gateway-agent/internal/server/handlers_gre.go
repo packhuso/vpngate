@@ -35,11 +35,13 @@ type greCreateReq struct {
 	TunnelRemoteIp string   `json:"tunnelRemoteIp"` // customer's end (peer address for routes into their LAN)
 	PublicIps      []string `json:"publicIps"`      // /32 or /Nn routes to install pointing at this tunnel
 	Mtu            int      `json:"mtu"`            // 0 → default 1476
+	SpeedLimitKbit int      `json:"speedLimitKbit"` // 0/omit = unshaped; both directions capped to this
 }
 
 type grePatchReq struct {
-	RemoteIp  *string   `json:"remoteIp,omitempty"`  // for DNS re-resolve
-	PublicIps *[]string `json:"publicIps,omitempty"` // full replacement — diff + add/remove routes
+	RemoteIp       *string   `json:"remoteIp,omitempty"`       // for DNS re-resolve
+	PublicIps      *[]string `json:"publicIps,omitempty"`      // full replacement — diff + add/remove routes
+	SpeedLimitKbit *int      `json:"speedLimitKbit,omitempty"` // 0 = remove cap; >0 = apply new rate
 }
 
 type grePeer struct {
@@ -140,6 +142,13 @@ func (s *Server) handleCreateGrePeer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.SpeedLimitKbit > 0 {
+		if err := applyGreShaping(ifname, req.PeerId, req.SpeedLimitKbit); err != nil {
+			writeErr(w, http.StatusInternalServerError, "SHAPING", err.Error())
+			return
+		}
+	}
+
 	success = true
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":    "created",
@@ -200,6 +209,17 @@ func (s *Server) handlePatchGrePeer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.SpeedLimitKbit != nil {
+		// 0 = remove any existing cap. Otherwise apply / update rate.
+		if *req.SpeedLimitKbit <= 0 {
+			removeGreShaping(ifname, peerId)
+		} else {
+			if err := applyGreShaping(ifname, peerId, *req.SpeedLimitKbit); err != nil {
+				writeErr(w, http.StatusInternalServerError, "SHAPING", err.Error())
+				return
+			}
+		}
+	}
 	if req.PublicIps != nil {
 		cur, err := listRoutesOnDev(ifname)
 		if err != nil {
@@ -251,6 +271,9 @@ func (s *Server) handleDeleteGrePeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// `ip link del` on a GRE interface also drops any route pointing at it.
+	// Explicitly tear down shaping (ifb device) too — it wouldn't survive the
+	// GRE link deletion anyway, but this keeps the qdisc entries clean.
+	removeGreShaping(ifname, peerId)
 	if out, err := runIp("link", "del", ifname); err != nil {
 		writeErr(w, http.StatusInternalServerError, "IP_DEL", "ip link del: "+err.Error()+": "+out)
 		return
@@ -430,4 +453,89 @@ type linkRow struct {
 			Bytes int64 `json:"bytes"`
 		} `json:"tx"`
 	} `json:"stats64"`
+}
+
+// ── shaping ─────────────────────────────────────────────────
+//
+// Per-customer bandwidth cap. Because each GRE customer has their own
+// interface (gre-<peerId>), we can put HTB directly on the interface without
+// per-IP u32 filters — every packet on gre-<peerId> is that customer's.
+//
+// Egress (download from customer's POV = leaving gre-<peerId>):
+//   HTB root qdisc on gre-<peerId>, one class 1:10 at the requested rate,
+//   fq_codel leaf for AQM.
+//
+// Ingress (upload from customer's POV = entering gre-<peerId>):
+//   ingress qdisc + u32 mirred redirect to a paired ifb-<peerId> device;
+//   HTB on ifb-<peerId> with the same rate. tc has no way to police at a
+//   real rate on the ingress path directly — the ifb trick is idiomatic.
+//
+// `ifb` module must be loaded (Debian ships it built-in; modprobed on demand
+// when the first interface is created).
+
+func ifbNameFor(peerId string) string { return "ifb-" + peerId }
+
+func applyGreShaping(ifname, peerId string, kbit int) error {
+	if kbit <= 0 {
+		return nil
+	}
+	rate := fmt.Sprintf("%dkbit", kbit)
+	// ── EGRESS on the GRE interface ──
+	// Clear any previous root qdisc so re-applying with a new rate replaces.
+	_, _ = runTc("qdisc", "del", "dev", ifname, "root")
+	if out, err := runTc("qdisc", "add", "dev", ifname, "root", "handle", "1:", "htb", "default", "10"); err != nil {
+		return fmt.Errorf("egress htb root: %w: %s", err, out)
+	}
+	if out, err := runTc("class", "add", "dev", ifname, "parent", "1:", "classid", "1:10",
+		"htb", "rate", rate, "ceil", rate, "burst", "15k"); err != nil {
+		return fmt.Errorf("egress htb class: %w: %s", err, out)
+	}
+	if out, err := runTc("qdisc", "add", "dev", ifname, "parent", "1:10", "handle", "10:", "fq_codel"); err != nil {
+		// fq_codel leaf is nice-to-have; missing kernel module isn't fatal.
+		_ = out
+	}
+
+	// ── INGRESS via paired ifb ──
+	ifb := ifbNameFor(peerId)
+	// Ensure the ifb module is loaded and the paired device exists + UP.
+	_, _ = runIp("link", "add", ifb, "type", "ifb")
+	if out, err := runIp("link", "set", ifb, "up"); err != nil {
+		return fmt.Errorf("ifb up: %w: %s", err, out)
+	}
+	// Reset ingress qdisc + ifb root qdisc so re-apply is idempotent.
+	_, _ = runTc("qdisc", "del", "dev", ifname, "ingress")
+	_, _ = runTc("qdisc", "del", "dev", ifb, "root")
+	if out, err := runTc("qdisc", "add", "dev", ifname, "handle", "ffff:", "ingress"); err != nil {
+		return fmt.Errorf("ingress qdisc: %w: %s", err, out)
+	}
+	// Redirect all ingress packets on the GRE interface to the ifb egress path.
+	if out, err := runTc("filter", "add", "dev", ifname, "parent", "ffff:",
+		"protocol", "all", "u32", "match", "u32", "0", "0",
+		"action", "mirred", "egress", "redirect", "dev", ifb); err != nil {
+		return fmt.Errorf("mirred: %w: %s", err, out)
+	}
+	if out, err := runTc("qdisc", "add", "dev", ifb, "root", "handle", "1:",
+		"htb", "default", "10"); err != nil {
+		return fmt.Errorf("ifb htb root: %w: %s", err, out)
+	}
+	if out, err := runTc("class", "add", "dev", ifb, "parent", "1:", "classid", "1:10",
+		"htb", "rate", rate, "ceil", rate, "burst", "15k"); err != nil {
+		return fmt.Errorf("ifb htb class: %w: %s", err, out)
+	}
+	_, _ = runTc("qdisc", "add", "dev", ifb, "parent", "1:10", "handle", "10:", "fq_codel")
+	return nil
+}
+
+// Best-effort cleanup — never fatal (called from delete + patch(kbit=0)).
+func removeGreShaping(ifname, peerId string) {
+	_, _ = runTc("qdisc", "del", "dev", ifname, "root")
+	_, _ = runTc("qdisc", "del", "dev", ifname, "ingress")
+	ifb := ifbNameFor(peerId)
+	_, _ = runTc("qdisc", "del", "dev", ifb, "root")
+	_, _ = runIp("link", "del", ifb)
+}
+
+func runTc(args ...string) (string, error) {
+	out, err := exec.Command("tc", args...).CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }
