@@ -376,6 +376,74 @@ export async function deleteGreTunnel(tunnelId: string, userId: string): Promise
   }
 }
 
+/** Change the customer's endpoint host on an existing GRE tunnel. Accepts a
+ *  domain or a bare IPv4. Immediately resolves + pushes to the agent. Caller
+ *  must have already validated ownership. */
+export async function updateGreEndpoint(
+  tunnelId: string,
+  userId: string,
+  newHost: string,
+): Promise<{ oldHost: string | null; newHost: string; newIp: string }> {
+  if (!isPlausibleHost(newHost)) {
+    throw ValidationError("endpoint must be a valid domain or IPv4");
+  }
+  const [t] = await sql<
+    {
+      id: string;
+      old_host: string | null;
+      old_ip: string | null;
+      agent_endpoint: string;
+      agent_ca_cert: string;
+      agent_token: string;
+    }[]
+  >`
+    SELECT t.id::text,
+           t.remote_endpoint_host AS old_host,
+           host(t.remote_endpoint_ip) AS old_ip,
+           g.agent_endpoint, g.agent_ca_cert, g.agent_token
+    FROM tunnels t JOIN vpn_gateways g ON g.id = t.gateway_id
+    WHERE t.id = ${tunnelId} AND t.user_id = ${userId}
+      AND t.protocol = 'gre' AND t.deleted_at IS NULL`;
+  if (!t) throw NotFound(`gre tunnel ${tunnelId}`);
+  if (t.old_host === newHost) {
+    // no-op — same host string; still bump resolved_at so UI reflects "just checked"
+    await sql`UPDATE tunnels SET remote_endpoint_resolved_at = NOW() WHERE id = ${tunnelId}`;
+    return { oldHost: t.old_host, newHost, newIp: t.old_ip ?? "" };
+  }
+
+  const newIp = await resolveHost(newHost);
+  const peerId = peerIdFromTunnelId(t.id);
+  const nowIso = new Date().toISOString();
+
+  // Patch agent FIRST — if that fails we haven't rewritten the DB yet, so
+  // the next drift tick will still see consistent state.
+  if (newIp !== t.old_ip) {
+    await buildGatewayClient(t).patchGrePeer(
+      peerId,
+      { remoteIp: newIp },
+      `gre-endpoint-edit-${tunnelId}-${Date.now()}`,
+    );
+  }
+
+  await sql`
+    UPDATE tunnels
+    SET remote_endpoint_host        = ${newHost},
+        remote_endpoint_ip          = ${newIp},
+        remote_endpoint_resolved_at = ${nowIso},
+        updated_at = NOW()
+    WHERE id = ${tunnelId}`;
+
+  await sql`
+    INSERT INTO audit_logs (actor_type, actor_id, action, resource_type,
+      resource_id, success, metadata)
+    VALUES ('user', ${userId}, 'gre.endpoint_changed', 'tunnel', ${tunnelId}, true,
+      ${JSON.stringify({
+        oldHost: t.old_host, newHost, oldIp: t.old_ip, newIp,
+      })}::jsonb)`;
+
+  return { oldHost: t.old_host, newHost, newIp };
+}
+
 /** Re-resolve the tunnel's domain and, if changed, patch the agent's remote.
  *  Returns {changed} so the caller can log/audit. Safe to call unconditionally;
  *  a stable DNS returns changed=false with no side effect. */

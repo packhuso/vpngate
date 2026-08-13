@@ -20,6 +20,7 @@ import {
   provisionGreTunnel,
   activateGreTunnel,
   deleteGreTunnel,
+  updateGreEndpoint,
 } from "@vpnhub/provisioning";
 import { SessionGuard } from "../auth/session.guard";
 import { sql } from "@vpnhub/db";
@@ -185,19 +186,41 @@ export class TunnelsController {
     }
   }
 
-  // PATCH /v1/tunnels/:id — edit mutable metadata (description). Owner-only.
+  // PATCH /v1/tunnels/:id — edit mutable metadata (description, and for GRE
+  // tunnels the customer endpoint host). Owner-only.
   @Patch(":id")
   @HttpCode(200)
   async patch(
     @Req() req: { user: { userId: string } },
     @Param("id") id: string,
-    @Body() body: { description?: string | null },
+    @Body() body: { description?: string | null; remoteEndpointHost?: string },
   ) {
     try {
+      // Endpoint change (GRE) is a side-effecting operation — resolves DNS,
+      // pushes to the agent, writes an audit row. Handle before description.
+      if (body?.remoteEndpointHost !== undefined) {
+        const trimmed = String(body.remoteEndpointHost).trim();
+        if (!trimmed) throw new BadRequestException("endpoint cannot be empty");
+        try {
+          const r = await updateGreEndpoint(id, req.user.userId, trimmed);
+          if (body.description !== undefined) {
+            await this.tunnels.updateDescription(
+              req.user.userId, id, body.description,
+            );
+          }
+          return { endpoint: r };
+        } catch (e) {
+          if (e instanceof ProvisionError) {
+            throw new BadRequestException({ code: e.code, message: e.message });
+          }
+          throw e;
+        }
+      }
       return await this.tunnels.updateDescription(
         req.user.userId, id, body?.description ?? null,
       );
     } catch (e) {
+      if (e instanceof BadRequestException) throw e;
       throw new BadRequestException((e as Error).message);
     }
   }

@@ -20,6 +20,7 @@ export {
   activateGreTunnel,
   deleteGreTunnel,
   resolveGreEndpoint,
+  updateGreEndpoint,
   resolveHost,
   peerIdFromTunnelId,
   type CreateGreTunnelInput,

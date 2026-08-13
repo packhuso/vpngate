@@ -10,6 +10,7 @@ import { decryptSecret } from "@vpnhub/shared";
 import TunnelActions from "./actions-client";
 import ConnInfo from "./copy-field-client";
 import EditableDescription from "./description-client";
+import GreEndpointEditor from "./gre-endpoint-client";
 import TunnelTraffic from "./traffic-client";
 
 export const runtime = "nodejs";
@@ -175,9 +176,16 @@ export default async function TunnelDetail({ params }: Params) {
               <span style={{ color: "var(--color-text-muted)" }}>Customer tunnel IP:</span>
               <span className="mono">{greCustomerEnd}/30</span>
               <span style={{ color: "var(--color-text-muted)" }}>Endpoint (your router):</span>
-              <span className="mono">
+              <span className="mono" style={{ display: "inline-flex", alignItems: "center" }}>
                 {t.remote_endpoint_host ?? "—"}
-                {t.remote_endpoint_ip ? <span style={{ color: "var(--color-text-muted)" }}> → {t.remote_endpoint_ip}</span> : null}
+                {t.remote_endpoint_ip && t.remote_endpoint_host !== t.remote_endpoint_ip ? (
+                  <span style={{ color: "var(--color-text-muted)", marginLeft: 4 }}> → {t.remote_endpoint_ip}</span>
+                ) : null}
+                <GreEndpointEditor
+                  tunnelId={id}
+                  initialHost={t.remote_endpoint_host}
+                  initialIp={t.remote_endpoint_ip}
+                />
               </span>
               {t.remote_endpoint_resolved_at && (
                 <>
