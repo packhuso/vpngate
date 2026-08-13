@@ -68,10 +68,12 @@ export class TunnelsService {
         protocol: string;
         private_ip: string;
         created_at: Date;
+        last_handshake_at: string | null;
       }[]
     >`
       SELECT id, name, description, speed_tier, status, protocol,
-             host(private_ip) AS private_ip, created_at
+             host(private_ip) AS private_ip, created_at,
+             last_handshake_at::text AS last_handshake_at
       FROM tunnels
       WHERE user_id = ${userId} AND deleted_at IS NULL
       ORDER BY created_at DESC`;
@@ -89,19 +91,34 @@ export class TunnelsService {
       byTunnel.set(r.tunnel_id, list);
     }
     const online = await getOnlineStatus(ids);
-    return rows.map((t) => ({
-      id: t.id,
-      name: t.name,
-      description: t.description,
-      speedTier: t.speed_tier,
-      status: t.status,
-      protocol: t.protocol,
-      privateIp: t.private_ip,
-      createdAt: t.created_at,
-      publicIps: byTunnel.get(t.id) ?? [],
-      online: online[t.id]?.online ?? false,
-      lastSeenAt: online[t.id]?.lastSeenAt ?? null,
-    }));
+    // Online cutoff for GRE (which has no connection-event reporter): monitor
+    // stamps last_handshake_at on each successful ping (every 60s). 3 min gives
+    // room for one missed cycle before we flip to offline.
+    const GRE_ONLINE_CUTOFF_MS = 3 * 60 * 1000;
+    const now = Date.now();
+    return rows.map((t) => {
+      let isOnline = online[t.id]?.online ?? false;
+      let lastSeen: string | Date | null = online[t.id]?.lastSeenAt ?? null;
+      if (t.protocol === "gre") {
+        // WG-style events don't apply — derive from monitor's handshake stamp.
+        const hs = t.last_handshake_at ? new Date(t.last_handshake_at).getTime() : 0;
+        isOnline = hs > 0 && now - hs < GRE_ONLINE_CUTOFF_MS;
+        lastSeen = t.last_handshake_at;
+      }
+      return {
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        speedTier: t.speed_tier,
+        status: t.status,
+        protocol: t.protocol,
+        privateIp: t.private_ip,
+        createdAt: t.created_at,
+        publicIps: byTunnel.get(t.id) ?? [],
+        online: isOnline,
+        lastSeenAt: lastSeen,
+      };
+    });
   }
 
   // Per-tunnel traffic samples for the portal chart. Server-side aggregates
@@ -182,30 +199,35 @@ export class TunnelsService {
   async pingTunnel(userId: string, tunnelId: string, count?: number) {
     const [t] = await sql<{
       private_ip: string;
+      protocol: string;
       agent_endpoint: string;
       agent_ca_cert: string;
       agent_token: string;
     }[]>`
-      SELECT host(t.private_ip) AS private_ip,
+      SELECT host(t.private_ip) AS private_ip, t.protocol,
              g.agent_endpoint, g.agent_ca_cert, g.agent_token
       FROM tunnels t JOIN vpn_gateways g ON g.id = t.gateway_id
       WHERE t.id = ${tunnelId} AND t.user_id = ${userId}
         AND t.deleted_at IS NULL`;
     if (!t) throw new NotFoundException("tunnel not found");
+    // For GRE tunnels our private_ip is the GATEWAY end of the /30 (e.g.
+    // 10.100.0.9) — pinging that from the gateway itself just hits `lo`.
+    // Ping the CUSTOMER end (gw_end + 1) so we actually cross the tunnel.
+    const target = t.protocol === "gre" ? incrementIp(t.private_ip) : t.private_ip;
     const gw = buildGatewayClient({
       agent_endpoint: t.agent_endpoint,
       agent_ca_cert: t.agent_ca_cert,
       agent_token: t.agent_token,
     });
     try {
-      const r = await gw.pingPeer(t.private_ip, count);
+      const r = await gw.pingPeer(target, count);
       return { results: [r] };
     } catch (e) {
       // Agent unreachable / errored — surface as a zero-loss-all-loss row so
       // the UI shows "ไม่ตอบ" instead of a generic 500.
       return {
         results: [{
-          ip: t.private_ip, transmitted: 4, received: 0, lossPct: 100,
+          ip: target, transmitted: 4, received: 0, lossPct: 100,
           minMs: null, avgMs: null, maxMs: null,
           error: (e as Error).message,
         }],
@@ -520,4 +542,12 @@ function buildMikrotikScript(a: MikrotikArgs): string {
       .join("") +
     `\n`;
   return wgIface + wgPeer + privAddr + loBridge + polRouting + mssClamp;
+}
+
+// Add 1 to a dotted-quad IPv4. Used to derive the customer end of a GRE /30
+// from the gateway end (e.g. 10.100.0.9 → 10.100.0.10).
+function incrementIp(ip: string): string {
+  const o = ip.split(".").map(Number);
+  const n = ((((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0) + 1) >>> 0;
+  return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
 }

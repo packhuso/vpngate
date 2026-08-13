@@ -11,6 +11,7 @@ import {
   dispatchEmailEvents,
   monitorGreTunnels,
   refreshStaleGreEndpoints,
+  reconcileGreAllGateways,
 } from "@vpnhub/provisioning";
 
 const QUEUE = "internal";
@@ -196,6 +197,24 @@ async function runDrift(reason: string) {
   driftRunning = true;
   const t0 = Date.now();
   try {
+    // GRE first — a fresh-booted gateway needs its interfaces rebuilt before
+    // WG drift starts polling stats etc. Both are best-effort per-gateway.
+    try {
+      const greReports = await reconcileGreAllGateways();
+      const react = greReports.reduce((n, r) => n + r.reactivated.length, 0);
+      const patch = greReports.reduce((n, r) => n + r.patched.length, 0);
+      const orph = greReports.reduce((n, r) => n + r.deletedOrphans.length, 0);
+      const errs = greReports.reduce((n, r) => n + r.errors.length, 0);
+      if (react || patch || orph || errs) {
+        console.log(
+          `[drift-gre] ${reason}: gateways=${greReports.length} ` +
+            `reactivated=${react} patched=${patch} orphans=${orph} errors=${errs}`,
+        );
+        if (errs) console.error("[drift-gre] errors:", JSON.stringify(greReports.flatMap((r) => r.errors)));
+      }
+    } catch (e) {
+      console.error("[drift-gre] FAILED:", (e as Error).message);
+    }
     const reports = await reconcileAllGateways();
     const totalPushed = reports.reduce((n, r) => n + r.pushed.length, 0);
     const totalOrphans = reports.reduce(

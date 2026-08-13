@@ -329,7 +329,11 @@ export default function TunnelsPanel() {
                   </span>
                   <span className="mono" style={{ fontSize: 12, color: "var(--color-text-muted)" }}>{t.privateIp}</span>
                   <span className="badge-neutral badge">{t.speedTier.replace("tier_", "")}</span>
-                  <span className="badge badge-primary">WireGuard</span>
+                  {t.protocol === "gre" ? (
+                    <span className="badge badge-warning">GRE</span>
+                  ) : (
+                    <span className="badge badge-primary">WireGuard</span>
+                  )}
                   <span className={`badge ${statusBadge(t.status)}`}>{t.status}</span>
                   <span className={`badge ${t.online ? "badge-success" : "badge-neutral"}`}
                     title={t.lastSeenAt ? `last seen ${fmtDateTime(t.lastSeenAt)}` : "no connection yet"}>
@@ -338,16 +342,23 @@ export default function TunnelsPanel() {
 
                   <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
                     {t.status === "active" && (
-                      <>
-                        <a href={`/v1/tunnels/${t.id}/config`} download={`${t.name}.conf`}
-                          className="btn btn-secondary btn-sm" title="WireGuard .conf">
-                          <FileDown size={14} />.conf
-                        </a>
+                      t.protocol === "gre" ? (
                         <a href={`/v1/tunnels/${t.id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`}
-                          className="btn btn-secondary btn-sm" title="Mikrotik script">
-                          <FileDown size={14} />Mikrotik
+                          className="btn btn-secondary btn-sm" title="Mikrotik GRE script">
+                          <FileDown size={14} />Mikrotik .rsc
                         </a>
-                      </>
+                      ) : (
+                        <>
+                          <a href={`/v1/tunnels/${t.id}/config`} download={`${t.name}.conf`}
+                            className="btn btn-secondary btn-sm" title="WireGuard .conf">
+                            <FileDown size={14} />.conf
+                          </a>
+                          <a href={`/v1/tunnels/${t.id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`}
+                            className="btn btn-secondary btn-sm" title="Mikrotik script">
+                            <FileDown size={14} />Mikrotik
+                          </a>
+                        </>
+                      )
                     )}
                     {t.status === "active" && (
                       <button onClick={() => setPingTarget({ id: t.id, name: t.name, privateIp: t.privateIp })}

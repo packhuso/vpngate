@@ -73,6 +73,9 @@ export async function monitorGreTunnels(): Promise<GreMonitorResult> {
     if (reachable) {
       res.reachable++;
       consecutiveFails.delete(t.id);
+      // Stamp handshake — used by tunnels.service.listForUser to derive online
+      // status for GRE tunnels (which have no connection-event reporter).
+      await sql`UPDATE tunnels SET last_handshake_at = NOW() WHERE id = ${t.id}`;
       continue;
     }
     res.unreachable++;

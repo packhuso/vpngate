@@ -31,6 +31,11 @@ export {
   type GreMonitorResult,
 } from "./gre-monitor";
 export {
+  reconcileGreOnGateway,
+  reconcileGreAllGateways,
+  type GreDriftReport,
+} from "./gre-drift";
+export {
   cidrContains,
   cidrsOverlap,
   isAligned,

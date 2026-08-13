@@ -43,6 +43,7 @@ export default async function TunnelDetail({ params }: Params) {
       remote_endpoint_resolved_at: Date | null;
       gre_key: number | null;
       gw_public_ip: string | null;
+      last_handshake_at: string | null;
     }[]
   >`
     SELECT t.name, t.description, t.status, t.protocol, host(t.private_ip) AS private_ip,
@@ -52,7 +53,8 @@ export default async function TunnelDetail({ params }: Params) {
            t.remote_endpoint_host,
            host(t.remote_endpoint_ip) AS remote_endpoint_ip,
            t.remote_endpoint_resolved_at, t.gre_key,
-           host(g.bgp_router_id) AS gw_public_ip
+           host(g.bgp_router_id) AS gw_public_ip,
+           t.last_handshake_at::text AS last_handshake_at
     FROM tunnels t JOIN vpn_gateways g ON g.id = t.gateway_id
     WHERE t.id = ${id} AND t.user_id = ${sess.userId}
       AND t.deleted_at IS NULL`;
@@ -75,11 +77,20 @@ export default async function TunnelDetail({ params }: Params) {
   // Routable prefixes shown in the config + the IP list (singles/32 + blocks).
   const routableCidrs = [...singleIps.map((ip) => `${ip}/32`), ...blockCidrs];
 
-  // Live online status from the latest connection event (connect/ip_change=online).
-  const [lastEv] = await sql<{ event: string; created_at: Date }[]>`
-    SELECT event, created_at FROM connection_events
-    WHERE tunnel_id = ${id} ORDER BY created_at DESC LIMIT 1`;
-  const isOnline = lastEv ? lastEv.event !== "disconnect" : false;
+  // Online status:
+  //   WG  → derived from the latest connection_events (peer-side reporter).
+  //   GRE → derived from the monitor loop's last successful ping, which
+  //         stamps last_handshake_at every 60s. 3 min = one missed cycle.
+  let isOnline = false;
+  if (isGre) {
+    const hs = t.last_handshake_at ? new Date(t.last_handshake_at).getTime() : 0;
+    isOnline = hs > 0 && Date.now() - hs < 3 * 60_000;
+  } else {
+    const [lastEv] = await sql<{ event: string; created_at: Date }[]>`
+      SELECT event, created_at FROM connection_events
+      WHERE tunnel_id = ${id} ORDER BY created_at DESC LIMIT 1`;
+    isOnline = lastEv ? lastEv.event !== "disconnect" : false;
+  }
 
   const others = await sql<{ id: string; name: string }[]>`
     SELECT id, name FROM tunnels
