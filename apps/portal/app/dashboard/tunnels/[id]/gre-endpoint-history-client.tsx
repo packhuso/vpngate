@@ -47,12 +47,15 @@ export default function GreEndpointHistory({ tunnelId }: Props) {
       if (j.changed) {
         setFlashKind("ok");
         setFlash(`✓ IP เปลี่ยน: ${j.oldIp} → ${j.newIp}`);
-        router.refresh();          // refresh main page to pick up new resolved_at/ip
-        if (open) void loadHistory(); // and refresh open history panel
+        if (open) void loadHistory(); // history panel — new gre.endpoint_reresolved row
       } else {
         setFlashKind("info");
         setFlash(`✓ ตรวจแล้ว — ยังเป็น ${j.newIp} (ไม่เปลี่ยน)`);
       }
+      // Always refresh — resolveGreEndpoint bumps remote_endpoint_resolved_at
+      // in both branches, so "Last DNS resolve" should reflect the new time
+      // even when the IP didn't move.
+      router.refresh();
     } catch (e) {
       setFlashKind("err");
       setFlash(`⚠ ${(e as Error).message}`);
