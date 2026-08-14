@@ -21,6 +21,7 @@ import {
   activateGreTunnel,
   deleteGreTunnel,
   updateGreEndpoint,
+  resolveGreEndpoint,
 } from "@vpnhub/provisioning";
 import { SessionGuard } from "../auth/session.guard";
 import { sql } from "@vpnhub/db";
@@ -233,6 +234,57 @@ export class TunnelsController {
       if (e instanceof BadRequestException) throw e;
       throw new BadRequestException((e as Error).message);
     }
+  }
+
+  // POST /v1/tunnels/:id/resolve-endpoint — manual DNS check for a GRE tunnel.
+  // Runs the same re-resolve loop the worker's monitor runs. Owner-scoped
+  // (ownership verified in the DB WHERE inside resolveGreEndpoint via a fresh
+  // check below — we don't call resolveGreEndpoint directly because it takes
+  // no userId; do the check here).
+  @Post(":id/resolve-endpoint")
+  @HttpCode(200)
+  async resolveEndpoint(
+    @Req() req: { user: { userId: string } },
+    @Param("id") id: string,
+  ) {
+    // Cheap ownership + protocol gate — protects against a session probing
+    // arbitrary UUIDs to trigger DNS lookups server-side.
+    const [t] = await sql<{ protocol: string }[]>`
+      SELECT protocol FROM tunnels
+      WHERE id = ${id} AND user_id = ${req.user.userId} AND deleted_at IS NULL`;
+    if (!t) throw new BadRequestException("tunnel not found");
+    if (t.protocol !== "gre") {
+      throw new BadRequestException("only GRE tunnels have a DNS endpoint");
+    }
+    try {
+      return await resolveGreEndpoint(id);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  // GET /v1/tunnels/:id/endpoint-history — audit-log rows for endpoint
+  // changes on a GRE tunnel. Both `gre.endpoint_reresolved` (system, DNS
+  // moved us to a new IP) and `gre.endpoint_changed` (user edited the host)
+  // are surfaced. Owner-only.
+  @Get(":id/endpoint-history")
+  async endpointHistory(
+    @Req() req: { user: { userId: string } },
+    @Param("id") id: string,
+  ) {
+    const [t] = await sql<{ id: string }[]>`
+      SELECT id FROM tunnels
+      WHERE id = ${id} AND user_id = ${req.user.userId} AND deleted_at IS NULL`;
+    if (!t) throw new BadRequestException("tunnel not found");
+    const rows = await sql<
+      { action: string; created_at: string; metadata: unknown }[]
+    >`
+      SELECT action, created_at::text AS created_at, metadata
+      FROM audit_logs
+      WHERE resource_type = 'tunnel' AND resource_id = ${id}
+        AND action IN ('gre.endpoint_reresolved', 'gre.endpoint_changed')
+      ORDER BY created_at DESC LIMIT 50`;
+    return { events: rows };
   }
 
   // POST /v1/tunnels/:id/change-tier — instant upgrade/downgrade. Full-charges

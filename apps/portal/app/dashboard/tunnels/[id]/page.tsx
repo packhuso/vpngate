@@ -12,6 +12,7 @@ import ConnInfo from "./copy-field-client";
 import EditableDescription from "./description-client";
 import EditableName from "./name-client";
 import GreEndpointEditor from "./gre-endpoint-client";
+import GreEndpointHistory from "./gre-endpoint-history-client";
 import TunnelTraffic from "./traffic-client";
 
 export const runtime = "nodejs";
@@ -191,7 +192,10 @@ export default async function TunnelDetail({ params }: Params) {
               {t.remote_endpoint_resolved_at && (
                 <>
                   <span style={{ color: "var(--color-text-muted)" }}>Last DNS resolve:</span>
-                  <span>{fmtDateTimeSec(t.remote_endpoint_resolved_at)}</span>
+                  <span>
+                    {fmtDateTimeSec(t.remote_endpoint_resolved_at)}
+                    <GreEndpointHistory tunnelId={id} />
+                  </span>
                 </>
               )}
             </div>
