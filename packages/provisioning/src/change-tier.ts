@@ -54,7 +54,7 @@ export async function changeTunnelTier(
 
   // Do the wallet+db mutation in a transaction; push to gateway after commit
   // so a slow/failing gateway can't hold the wallet lock.
-  const { oldTier, newBalance, gwEndpoint, gwCaCert, gwToken, pubKey, privateIp, ips } =
+  const { oldTier, newBalance, gwEndpoint, gwCaCert, gwToken, pubKey, privateIp, ips, protocol } =
     await sql.begin(async (tx: Tx) => {
       const tRows: {
         id: string;
@@ -65,9 +65,10 @@ export async function changeTunnelTier(
         wg_public_key: string;
         private_ip: string;
         gateway_id: string;
+        protocol: string;
       }[] = await tx`
         SELECT id, user_id, name, speed_tier, status,
-               wg_public_key, host(private_ip) AS private_ip, gateway_id
+               wg_public_key, host(private_ip) AS private_ip, gateway_id, protocol
         FROM tunnels
         WHERE id = ${tunnelId} AND user_id = ${userId} AND deleted_at IS NULL
         FOR UPDATE`;
@@ -171,22 +172,36 @@ export async function changeTunnelTier(
         pubKey: t.wg_public_key,
         privateIp: t.private_ip,
         ips: cidrRows.map((r: { cidr: string }) => r.cidr),
+        protocol: t.protocol,
       };
     });
 
   // Push new speedLimitKbit to gateway. Best-effort — if it fails, drift will
   // reconcile within ~10 min. Tunnel state in DB is already correct.
-  if (pubKey && gwEndpoint) {
+  if (gwEndpoint) {
     try {
-      await buildGatewayClient({
+      const client = buildGatewayClient({
         agent_endpoint: gwEndpoint,
         agent_ca_cert: gwCaCert,
         agent_token: gwToken,
-      }).updatePeerIps(
-        pubKey, privateIp, ips,
-        `tier-change-${tunnelId}-${now.getTime()}`,
-        tierRateKbit(newTier),
-      );
+      });
+      const kbit = tierRateKbit(newTier);
+      if (protocol === "gre") {
+        // GRE tunnel: patch the interface's HTB rate directly. peerId is
+        // derived from the tunnel UUID (matches activateGreTunnel).
+        const peerId = tunnelId.replace(/-/g, "").slice(0, 8);
+        await client.patchGrePeer(
+          peerId,
+          { speedLimitKbit: kbit },
+          `tier-change-${tunnelId}-${now.getTime()}`,
+        );
+      } else if (pubKey) {
+        await client.updatePeerIps(
+          pubKey, privateIp, ips,
+          `tier-change-${tunnelId}-${now.getTime()}`,
+          kbit,
+        );
+      }
     } catch (e) {
       console.error(
         `[tier-change] gateway push failed for ${tunnelId}: ${(e as Error).message} ` +
