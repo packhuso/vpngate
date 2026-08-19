@@ -155,6 +155,21 @@ LAN one, or customer traffic gets NAT'd by Mikrotik LAN interface. Also
 disable cloud-init network config (`/etc/cloud/cloud.cfg.d/99-disable-network-config.cfg`
 = `network: {config: disabled}`) so netplan changes persist.
 
+**Perf tuning** (`/etc/sysctl.d/60-vpnhub-net-tune.conf`) — default Debian
+buffers cap single-TCP-flow throughput at ~150 Mbps on high-BDP paths:
+
+    net.core.rmem_max = 16777216
+    net.core.wmem_max = 16777216
+    net.ipv4.tcp_rmem = 4096 262144 16777216
+    net.ipv4.tcp_wmem = 4096 262144 16777216
+    net.core.netdev_max_backlog = 16384
+    net.ipv4.tcp_congestion_control = bbr
+    net.core.default_qdisc = fq
+
+Plus `apt install irqbalance` (enable) to spread virtio queue IRQs across
+the 8 vCPUs. TX ring bump attempted via `/etc/systemd/system/vpnhub-nic-tune.service`
+but virtio-net caps at 256 — kept for a future driver that supports more.
+
 ## Traffic sampler
 
 Every 5 min the worker polls each active gateway's `/v1/stats/peers`,
