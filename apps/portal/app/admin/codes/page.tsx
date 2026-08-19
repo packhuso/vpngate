@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { fmtDate, fmtDateTime } from "../../_lib/datetime";
 import { FileText, Sparkles, Download, X, CheckCircle2, Circle, Pause, Play, Trash2, Clock } from "lucide-react";
 
 interface Batch {
@@ -59,7 +60,7 @@ export default function AdminCodes() {
     const effectiveName =
       name.trim() ||
       (mode === "single"
-        ? `Single ฿${value} ${new Date().toISOString().slice(0, 16).replace("T", " ")}`
+        ? `Single ฿${value} ${fmtDateTime(new Date())}`
         : "");
     try {
       const r = await fetch("/v1/admin/codes/batches", {
@@ -241,7 +242,7 @@ export default function AdminCodes() {
                 <td className="mono">{b.codeCount - b.redeemedCount}</td>
                 <td className="mono">{fmt(b.totalRedeemedSatang)}</td>
                 <td><span className="badge badge-success">{b.status}</span></td>
-                <td style={{ color: "var(--color-text-muted)" }}>{new Date(b.createdAt).toISOString().slice(0, 10)}</td>
+                <td style={{ color: "var(--color-text-muted)" }}>{fmtDate(b.createdAt)}</td>
               </tr>
             ))}
           </tbody>
@@ -333,7 +334,7 @@ export default function AdminCodes() {
                       <td>{badge}</td>
                       <td>{c.currentUses}{c.maxUsesTotal > 0 ? `/${c.maxUsesTotal}` : ""}</td>
                       <td style={{ color: expired ? "var(--color-danger)" : "var(--color-text-muted)" }}>
-                        {c.expiresAt ? new Date(c.expiresAt).toISOString().slice(0, 16).replace("T", " ") : "—"}
+                        {c.expiresAt ? fmtDateTime(c.expiresAt) : "—"}
                       </td>
                       <td>
                         <span style={{ display: "flex", gap: 4 }}>
@@ -358,7 +359,7 @@ export default function AdminCodes() {
                               {c.redemptions.map((r, i) => (
                                 <div key={i}>
                                   <span style={{ color: "var(--color-primary)" }}>{r.userEmail ?? "(deleted user)"}</span>
-                                  <span style={{ color: "var(--color-text-muted)" }}> · {new Date(r.redeemedAt).toISOString().slice(0, 16).replace("T", " ")}</span>
+                                  <span style={{ color: "var(--color-text-muted)" }}> · {fmtDateTime(r.redeemedAt)}</span>
                                   <span style={{ color: "var(--color-success)" }}> · +{fmt(r.amountSatang)}</span>
                                 </div>
                               ))}

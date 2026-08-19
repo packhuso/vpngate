@@ -1,17 +1,14 @@
 import { Controller, Get, Query, Req, UseGuards } from "@nestjs/common";
 import { sql } from "@vpnhub/db";
-import {
-  IP_BLOCK_SATANG,
-  SINGLE_IP_SATANG,
-  TIER_PRICE_SATANG,
-  type SpeedTier,
-} from "@vpnhub/billing";
+import { type SpeedTier } from "@vpnhub/billing";
+import { getPricing } from "@vpnhub/provisioning";
 import { SessionGuard } from "../auth/session.guard";
 
 interface TunnelRow {
   id: string;
   name: string;
   speed_tier: SpeedTier;
+  price_satang: string | null;
   status: string;
   next_billing_at: Date;
   suspended_at: Date | null;
@@ -20,6 +17,7 @@ interface TunnelRow {
 interface IpRow {
   ip: string;
   status: string;
+  price_satang: string | null;
   next_billing_at: Date | null;
   suspended_at: Date | null;
   delete_after: Date | null;
@@ -55,13 +53,13 @@ export class BillingController {
     const balance = Number(w?.balance_satang ?? 0);
 
     const tunnels = await sql<TunnelRow[]>`
-      SELECT id, name, speed_tier, status, next_billing_at,
+      SELECT id, name, speed_tier, price_satang, status, next_billing_at,
              suspended_at, delete_after
       FROM tunnels
       WHERE user_id = ${userId} AND deleted_at IS NULL
       ORDER BY next_billing_at ASC`;
     const ips = await sql<IpRow[]>`
-      SELECT host(p.ip_address) AS ip, p.status, p.next_billing_at,
+      SELECT host(p.ip_address) AS ip, p.status, p.price_satang, p.next_billing_at,
              p.suspended_at, p.delete_after, t.name AS tunnel_name
       FROM public_ips p
       LEFT JOIN tunnels t ON t.id = p.tunnel_id
@@ -75,17 +73,21 @@ export class BillingController {
       WHERE user_id = ${userId} AND status IN ('active', 'suspended')
       ORDER BY next_billing_at ASC`;
 
-    // Compute MRR (next-cycle obligation) — sum of recurring prices for each
-    // active item, regardless of when the cycle hits.
-    const mrrTunnels = tunnels.reduce(
-      (n, t) => n + (TIER_PRICE_SATANG[t.speed_tier] ?? 0),
-      0,
-    );
-    const mrrIps = ips.length * SINGLE_IP_SATANG;
-    const mrrBlocks = blocks.reduce(
-      (n, b) => n + (IP_BLOCK_SATANG[b.block_size] ?? Number(b.price_satang)),
-      0,
-    );
+    // Pricing comes from the admin-configurable tables (migration 0010).
+    const pricing = await getPricing();
+    const tierPrice = new Map(pricing.speed.map((s) => [s.tier, s.priceSatang]));
+    const ipUnit = pricing.ip.find((i) => i.blockSize === 1)?.priceSatang ?? 0;
+    const blockPrice = new Map(pricing.ip.map((i) => [i.blockSize, i.priceSatang]));
+
+    // Compute MRR (next-cycle obligation) — sum of the LOCKED per-item price each
+    // customer actually pays (grandfathered), falling back to the live catalog
+    // only for any legacy row without a snapshot.
+    const tPrice = (t: TunnelRow) => Number(t.price_satang ?? tierPrice.get(t.speed_tier) ?? 0);
+    const pPrice = (p: IpRow) => Number(p.price_satang ?? ipUnit);
+    const bPrice = (b: BlockRow) => Number(b.price_satang ?? blockPrice.get(b.block_size) ?? 0);
+    const mrrTunnels = tunnels.reduce((n, t) => n + tPrice(t), 0);
+    const mrrIps = ips.reduce((n, p) => n + pPrice(p), 0);
+    const mrrBlocks = blocks.reduce((n, b) => n + bPrice(b), 0);
     const mrr = mrrTunnels + mrrIps + mrrBlocks;
 
     const formatItem = <T extends { suspended_at: Date | null; delete_after: Date | null }>(
@@ -107,16 +109,15 @@ export class BillingController {
 
     const items = [
       ...tunnels.map((t) =>
-        formatItem(t, "tunnel", t.name, TIER_PRICE_SATANG[t.speed_tier] ?? 0,
+        formatItem(t, "tunnel", t.name, tPrice(t),
           t.next_billing_at, { id: t.id, status: t.status, speedTier: t.speed_tier }),
       ),
       ...ips.map((p) =>
-        formatItem(p, "ip", `${p.ip}/32`, SINGLE_IP_SATANG,
+        formatItem(p, "ip", `${p.ip}/32`, pPrice(p),
           p.next_billing_at, { ip: p.ip, status: p.status, tunnel: p.tunnel_name }),
       ),
       ...blocks.map((b) =>
-        formatItem(b, "block", b.cidr,
-          IP_BLOCK_SATANG[b.block_size] ?? Number(b.price_satang),
+        formatItem(b, "block", b.cidr, bPrice(b),
           b.next_billing_at, { id: b.id, status: b.status, blockSize: b.block_size }),
       ),
     ].sort((a, b) => {
@@ -151,6 +152,14 @@ export class BillingController {
           ? Math.floor((balance / mrr) * 31) // days at current MRR
           : null,
     };
+  }
+
+  // GET /v1/billing/pricing — current packages (speed prices, IP prices, and the
+  // protocol×tier allow matrix) so the portal can show prices + offer only the
+  // tiers an admin enabled for the chosen protocol.
+  @Get("pricing")
+  async pricing() {
+    return getPricing();
   }
 
   // GET /v1/billing/transactions?limit=50&offset=0&type=

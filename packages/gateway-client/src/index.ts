@@ -26,6 +26,40 @@ export interface CreatePeerInput {
   speedLimitKbit?: number;
 }
 
+// ── GRE peer types ─────────────────────────────────────────
+export interface CreateGrePeerInput {
+  peerId: string;              // becomes gre-<peerId> interface name; 4-32 alnum
+  remoteIp: string;            // customer's public IP (from DNS resolve)
+  localIp?: string;            // this gateway's public IP (agent binds underlay)
+  greKey?: number;             // 32-bit; 0/omit = no key
+  tunnelLocalIp: string;       // CIDR, e.g. "10.100.0.1/30"
+  tunnelRemoteIp?: string;     // customer's tunnel endpoint (documentation)
+  publicIps?: string[];        // /32 or /Nn routes to point at this tunnel
+  mtu?: number;                // 0/omit → 1476
+  speedLimitKbit?: number;     // 0/omit = unshaped; else HTB cap both dirs
+}
+
+export interface PatchGrePeerInput {
+  remoteIp?: string;       // DNS re-resolve updates this
+  publicIps?: string[];    // full replacement — diff + apply
+  speedLimitKbit?: number; // 0 removes cap, >0 updates rate
+}
+
+export interface GrePeer {
+  peerId: string;
+  interface: string;
+  remoteIp: string;
+  localIp: string;
+  greKey: number;
+  tunnelLocalIp: string;
+  tunnelRemoteIp: string;
+  publicIps: string[];
+  mtu: number;
+  operState: string;    // UP / DOWN / UNKNOWN
+  bytesRx: number;
+  bytesTx: number;
+}
+
 export interface Peer {
   peerId: string;
   publicKey: string;
@@ -125,6 +159,76 @@ export class GatewayClient {
   listPeers() {
     return this.request<{ interface: string; peers: Peer[] }>("GET", "/peers");
   }
+  /** Lightweight per-peer traffic counters straight from the WG kernel
+   *  (cumulative bytesRx/bytesTx). Meant for the periodic traffic sampler —
+   *  callers compute deltas across ticks. Cheap: one `wg show wg0 dump`. */
+  getPeerStats() {
+    return this.request<{
+      collectedAt: string;
+      peers: {
+        publicKey: string;
+        bytesRx: number;
+        bytesTx: number;
+        lastHandshake: string | null;
+        lastEndpoint: string | null;
+      }[];
+    }>("GET", "/stats/peers");
+  }
+  /** BGP session state + managed VPN-POOLS prefix-list contents. Read-only.
+   *  Backs the admin Gateways page — one call per gateway to render the row. */
+  getRoutingStatus() {
+    return this.request<{
+      collectedAt: string;
+      bgpAvailable: boolean;
+      localAs?: number;
+      routerId?: string;
+      neighbors: {
+        neighbor: string;
+        remoteAs: number;
+        state: string;
+        uptimeSeconds: number;
+        pfxRcd: number;
+        pfxSnt: number;
+      }[];
+      prefixListName: string;
+      prefixListCount: number;
+      prefixEntries: { seq: number; action: string; prefix: string; ge?: number; le?: number }[];
+      warnings?: string[];
+    }>("GET", "/routing/status");
+  }
+
+  // ── GRE tunnels ──────────────────────────────────────────
+  listGrePeers() {
+    return this.request<{ peers: GrePeer[] }>("GET", "/gre/peers");
+  }
+  getGrePeer(peerId: string) {
+    return this.request<GrePeer>("GET", `/gre/peers/${encodeURIComponent(peerId)}`);
+  }
+  createGrePeer(input: CreateGrePeerInput, idempotencyKey: string) {
+    return this.request<{ status: string; peerId: string; interface: string }>(
+      "POST",
+      "/gre/peers",
+      input,
+      idempotencyKey,
+    );
+  }
+  patchGrePeer(peerId: string, patch: PatchGrePeerInput, idempotencyKey: string) {
+    return this.request<{ status: string; peerId: string }>(
+      "PATCH",
+      `/gre/peers/${encodeURIComponent(peerId)}`,
+      patch,
+      idempotencyKey,
+    );
+  }
+  deleteGrePeer(peerId: string, idempotencyKey: string) {
+    return this.request<{ status: string; peerId: string }>(
+      "DELETE",
+      `/gre/peers/${encodeURIComponent(peerId)}`,
+      undefined,
+      idempotencyKey,
+    );
+  }
+
   createPeer(input: CreatePeerInput, idempotencyKey: string) {
     return this.request<{ status: string; peerId: string; interface: string }>(
       "POST",
@@ -200,5 +304,35 @@ export class GatewayClient {
       undefined,
       idempotencyKey,
     );
+  }
+  /** Atomically replace the contents of a managed FRR prefix-list (e.g.
+   *  VPN-POOLS). Each entry: {prefix, ge?, le?}. ge/le mirror FRR semantics:
+   *  ge=N → accept this prefix and any more-specific within it of length ≥ N. */
+  syncFrrPrefixList(
+    list: string,
+    prefixes: { prefix: string; ge?: number; le?: number }[],
+    idempotencyKey: string,
+  ) {
+    return this.request<{ status: string; list: string; entries: number }>(
+      "POST",
+      "/frr/prefix-list/sync",
+      { list, prefixes },
+      idempotencyKey,
+    );
+  }
+
+  /** ICMP-ping a peer's tunnel-side IP from this gateway. Returns zeros on
+   *  unreachable instead of throwing (server-side helper handles loss).
+   *  count = 1..10 packets (default 4). */
+  pingPeer(ip: string, count?: number) {
+    return this.request<{
+      ip: string;
+      transmitted: number;
+      received: number;
+      lossPct: number;
+      minMs: number | null;
+      avgMs: number | null;
+      maxMs: number | null;
+    }>("POST", "/ping", { ip, count });
   }
 }

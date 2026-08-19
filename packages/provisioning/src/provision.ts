@@ -1,15 +1,16 @@
 // createTunnel — the money-safe provisioning transaction (design Section 7.1).
 import { sql } from "@vpnhub/db";
 import { encryptSecret, generateWireguardKeypair } from "@vpnhub/shared";
-import { TIER_PRICE_SATANG, type SpeedTier } from "@vpnhub/billing";
+import { type SpeedTier } from "@vpnhub/billing";
 import { allocatePrivateIp } from "./ip";
+import { speedTierPrice, tierAllowed } from "./pricing";
 import {
   InsufficientCredit,
   NoGatewayAvailable,
   ValidationError,
 } from "./errors";
 
-export type TunnelProtocol = "wireguard" | "openvpn" | "sstp";
+export type TunnelProtocol = "wireguard";
 
 export interface CreateTunnelInput {
   userId: string;
@@ -37,27 +38,28 @@ const DAY_MS = 86_400_000;
 export async function createTunnel(
   input: CreateTunnelInput,
 ): Promise<CreateTunnelResult> {
-  const price = TIER_PRICE_SATANG[input.speedTier];
-  if (price == null) throw ValidationError(`bad speedTier ${input.speedTier}`);
   if (!TUNNEL_NAME_RE.test(input.name ?? "")) {
     throw ValidationError(
       "name must be 1-100 chars: letters, digits, - or _ only (use Description for other languages)",
     );
   }
   const description = (input.description ?? "").slice(0, 300) || null;
-  const protocol: TunnelProtocol = input.protocol ?? "wireguard";
-  if (protocol !== "wireguard" && protocol !== "openvpn" && protocol !== "sstp") {
-    throw ValidationError(`bad protocol ${protocol}`);
+  // Only WireGuard is offered now — OVPN/SSTP were removed.
+  const protocol: TunnelProtocol = "wireguard";
+  if (input.protocol && input.protocol !== "wireguard") {
+    throw ValidationError(`protocol ${input.protocol} not supported (WireGuard only)`);
   }
-  // Each gateway advertises the protocols it serves via a per-protocol column:
-  // WG=wg_public_key, OpenVPN=ovpn_endpoint, SSTP=sstp_endpoint. Select only
-  // gateways that serve the chosen protocol.
-  const protoFilter =
-    protocol === "openvpn"
-      ? sql`AND ovpn_endpoint IS NOT NULL`
-      : protocol === "sstp"
-        ? sql`AND sstp_endpoint IS NOT NULL`
-        : sql`AND wg_public_key IS NOT NULL`;
+  // Price + allow matrix come from admin-configurable pricing (migration 0010).
+  let price: number;
+  try {
+    price = await speedTierPrice(input.speedTier);
+  } catch {
+    throw ValidationError(`bad speedTier ${input.speedTier}`);
+  }
+  if (!(await tierAllowed(protocol, input.speedTier))) {
+    throw ValidationError(`${protocol} ไม่เปิดขายแพ็กเกจ ${input.speedTier} (ปิดโดยแอดมิน)`);
+  }
+  const protoFilter = sql`AND wg_public_key IS NOT NULL`;
 
   return sql.begin(async (tx) => {
     const [wallet] = await tx`
@@ -105,10 +107,10 @@ export async function createTunnel(
 
     const [tunnel] = await tx`
       INSERT INTO tunnels (user_id, gateway_id, name, description, protocol,
-        speed_tier, private_ip, wg_public_key, wg_private_key_encrypted, status,
-        next_billing_at)
+        speed_tier, price_satang, private_ip, wg_public_key,
+        wg_private_key_encrypted, status, next_billing_at)
       VALUES (${input.userId}, ${gateway.id}, ${input.name}, ${description},
-        ${protocol}, ${input.speedTier}, ${privateIp}, ${kp.publicKey},
+        ${protocol}, ${input.speedTier}, ${price}, ${privateIp}, ${kp.publicKey},
         ${encPriv}, 'provisioning', ${nextBillingIso})
       RETURNING id`;
     const tunnelId = tunnel.id as string;

@@ -10,19 +10,28 @@ export const TIER_PRICE_SATANG: Record<SpeedTier, Satang> = {
   tier_1gb: 30000, // 300 ฿
 };
 
-/** Per-tunnel bandwidth cap in kilobits/sec — passed straight to `tc rate`
- *  on the gateway (HTB egress on wg0 + ifb0 ingress mirror). Both directions
- *  are capped at the same rate. */
+/** Nominal per-tier bandwidth — the figure SHOWN to customers (Mbps).
+ *  This is the advertised tier, not the rate actually enforced on the gateway:
+ *  see SHAPING_HEADROOM / tierRateKbit() for the enforced cap. */
 export const TIER_RATE_KBIT: Record<SpeedTier, number> = {
   tier_100mb: 100_000, //  100 Mbps
   tier_500mb: 500_000, //  500 Mbps
   tier_1gb: 1_000_000, // 1000 Mbps
 };
 
-/** Resolve a tunnel's bandwidth cap (kbit/s) from its speed tier.
- *  Falls back to the 100 Mbps tier if an unknown value is passed. */
+/** Headroom multiplier applied to the ENFORCED cap (not the displayed tier).
+ *  Customers see e.g. 100 Mbps but `tc` shapes at 160 Mbit, so VPN/protocol
+ *  overhead and bursts don't make the advertised speed feel slow. Applies to
+ *  every tier and every protocol (the single enforcement path is tierRateKbit). */
+export const SHAPING_HEADROOM = 1.6;
+
+/** Resolve a tunnel's ENFORCED bandwidth cap (kbit/s) from its speed tier —
+ *  nominal tier × SHAPING_HEADROOM. Used for `tc rate` (HTB egress + ingress
+ *  mirror), both directions capped equally. Falls back to the 100 Mbps tier if
+ *  an unknown value is passed. Display code must use TIER_RATE_KBIT instead. */
 export function tierRateKbit(tier: string): number {
-  return TIER_RATE_KBIT[tier as SpeedTier] ?? TIER_RATE_KBIT.tier_100mb;
+  const nominal = TIER_RATE_KBIT[tier as SpeedTier] ?? TIER_RATE_KBIT.tier_100mb;
+  return Math.round(nominal * SHAPING_HEADROOM);
 }
 
 /** Public IP add-on pricing (design Section 2.1 + /31 /30 extension), in satang.

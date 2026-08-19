@@ -2,8 +2,9 @@
 // Lifecycle: pool → owned (tunnel_id=NULL) → assigned (tunnel_id=X) → released
 // Billing on the IP is independent from any tunnel assignment.
 import { sql } from "@vpnhub/db";
-import { SINGLE_IP_SATANG, tierRateKbit } from "@vpnhub/billing";
+import { tierRateKbit } from "@vpnhub/billing";
 import { buildGatewayClient } from "./gateway-client";
+import { ipPrice } from "./pricing";
 import {
   InsufficientCredit,
   NoIpAvailable,
@@ -30,7 +31,8 @@ interface GwInfo {
 
 interface TunnelSyncInfo {
   tunnelId: string;
-  pubKey: string;
+  protocol: string;
+  pubKey: string | null;        // WG only
   privateIp: string;
   gw: GwInfo;
   ips: string[];
@@ -41,10 +43,16 @@ async function loadTunnelSync(
   tx: Tx,
   tunnelId: string,
 ): Promise<TunnelSyncInfo | null> {
-  const tRows: { wg_public_key: string; private_ip: string; gateway_id: string; speed_tier: string }[] =
-    await tx`SELECT wg_public_key, host(private_ip) AS private_ip, gateway_id,
-                    speed_tier
-             FROM tunnels WHERE id = ${tunnelId} AND deleted_at IS NULL`;
+  const tRows: {
+    wg_public_key: string | null;
+    private_ip: string;
+    gateway_id: string;
+    speed_tier: string;
+    protocol: string;
+  }[] = await tx`
+    SELECT wg_public_key, host(private_ip) AS private_ip, gateway_id,
+           speed_tier, protocol
+    FROM tunnels WHERE id = ${tunnelId} AND deleted_at IS NULL`;
   const t = tRows[0];
   if (!t) return null;
   const gwRows: GwInfo[] = await tx`
@@ -65,6 +73,7 @@ async function loadTunnelSync(
     ORDER BY cidr`;
   return {
     tunnelId,
+    protocol: t.protocol,
     pubKey: t.wg_public_key,
     privateIp: t.private_ip,
     gw,
@@ -77,16 +86,31 @@ async function pushSyncs(syncs: TunnelSyncInfo[], idempotencyTag: string) {
   for (const s of syncs) {
     const t0 = Date.now();
     try {
-      await buildGatewayClient(s.gw).updatePeerIps(
-        s.pubKey,
-        s.privateIp,
-        s.ips,
-        `${idempotencyTag}-${s.tunnelId}`,
-        s.speedLimitKbit,
-      );
+      const client = buildGatewayClient(s.gw);
+      if (s.protocol === "gre") {
+        // GRE tunnels don't have a wg_public_key; the interface is keyed by
+        // peerId derived from the tunnel UUID. patchGrePeer updates the /32
+        // routes pointing at gre-<peerId> — same semantics as updatePeerIps
+        // updates AllowedIPs on WG.
+        const peerId = s.tunnelId.replace(/-/g, "").slice(0, 8);
+        await client.patchGrePeer(
+          peerId,
+          { publicIps: s.ips },
+          `${idempotencyTag}-${s.tunnelId}`,
+        );
+      } else {
+        if (!s.pubKey) throw new Error(`tunnel ${s.tunnelId.slice(0, 8)} has no wg_public_key`);
+        await client.updatePeerIps(
+          s.pubKey,
+          s.privateIp,
+          s.ips,
+          `${idempotencyTag}-${s.tunnelId}`,
+          s.speedLimitKbit,
+        );
+      }
       console.log(
         `[gw-push] ${idempotencyTag} tunnel=${s.tunnelId.slice(0, 8)} ` +
-          `ips=[${s.ips.join(",")}] ok (${Date.now() - t0}ms)`,
+          `(${s.protocol}) ips=[${s.ips.join(",")}] ok (${Date.now() - t0}ms)`,
       );
     } catch (e) {
       console.error(
@@ -109,6 +133,7 @@ export async function buyPublicIp(
   userId: string,
   ip: string,
 ): Promise<BuyIpResult> {
+  const SINGLE_IP_SATANG = await ipPrice(1); // admin-configurable (migration 0010)
   return sql.begin(async (tx) => {
     const poolRows: { id: string }[] =
       await tx`SELECT id FROM ip_pool WHERE block >>= ${ip}::inet LIMIT 1`;
@@ -150,14 +175,15 @@ export async function buyPublicIp(
     const nextBilling = new Date(Date.now() + 31 * DAY_MS).toISOString();
     await tx`
       INSERT INTO public_ips (ip_address, pool_id, user_id, tunnel_id,
-        status, next_billing_at, allocated_at)
+        status, price_satang, next_billing_at, allocated_at)
       VALUES (${ip}::inet, ${pool.id}, ${userId}, NULL, 'allocated',
-        ${nextBilling}, NOW())
+        ${SINGLE_IP_SATANG}, ${nextBilling}, NOW())
       ON CONFLICT (ip_address) DO UPDATE SET
         user_id = EXCLUDED.user_id,
         tunnel_id = NULL,
         block_id = NULL,
         status = 'allocated',
+        price_satang = EXCLUDED.price_satang,
         next_billing_at = EXCLUDED.next_billing_at,
         allocated_at = NOW(),
         released_at = NULL`;

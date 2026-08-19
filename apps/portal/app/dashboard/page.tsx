@@ -1,9 +1,10 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { Wallet, Cable, Globe, Shield, KeyRound, Lock, ArrowRight } from "lucide-react";
+import { Wallet, Cable, Globe, Shield, ArrowRight } from "lucide-react";
 import { authConfig, resolveSession } from "@vpnhub/auth";
 import { sql } from "@vpnhub/db";
+import YourIp from "./your-ip-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,18 +22,17 @@ export default async function Dashboard() {
   const protos = await sql<{ protocol: string; n: number }[]>`
     SELECT protocol, count(*)::int AS n FROM tunnels
     WHERE user_id = ${sess.userId} AND deleted_at IS NULL GROUP BY protocol`;
-  const [ipc] = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM public_ips WHERE user_id = ${sess.userId}`;
+  const myIps = await sql<{ ip: string }[]>`
+    SELECT host(ip_address) AS ip FROM public_ips WHERE user_id = ${sess.userId}`;
 
   const cnt = (p: string) => Number(protos.find((r) => r.protocol === p)?.n ?? 0);
   const totalTunnels = protos.reduce((s, r) => s + Number(r.n), 0);
-  const ipCount = Number(ipc?.n ?? 0);
+  const ipCount = myIps.length;
   const balance = fmt(Number(w?.balance_satang ?? 0));
+  const vpnIps = myIps.map((r) => r.ip); // for the live "Your IP" on-VPN check
 
   const byProto = [
     { key: "wireguard", label: "WireGuard", Icon: Shield, color: "var(--color-primary)" },
-    { key: "openvpn", label: "OpenVPN", Icon: KeyRound, color: "#0ea5e9" },
-    { key: "sstp", label: "SSTP", Icon: Lock, color: "#d97706" },
   ];
 
   return (
@@ -41,6 +41,9 @@ export default async function Dashboard() {
         <h1 className="page-title">Dashboard</h1>
         <p className="page-subtitle">ภาพรวมบัญชีของคุณ</p>
       </header>
+
+      {/* Your IP — fetched live client-side (always current, never cached) */}
+      <YourIp vpnIps={vpnIps} />
 
       {/* Stat cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16 }}>

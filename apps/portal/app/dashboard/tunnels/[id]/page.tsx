@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { fmtDate, fmtDateTimeSec } from "../../../_lib/datetime";
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import QRCode from "qrcode";
@@ -7,8 +8,12 @@ import { authConfig, resolveSession } from "@vpnhub/auth";
 import { sql } from "@vpnhub/db";
 import { decryptSecret } from "@vpnhub/shared";
 import TunnelActions from "./actions-client";
-import SstpCreds from "./sstp-creds-client";
 import ConnInfo from "./copy-field-client";
+import EditableDescription from "./description-client";
+import EditableName from "./name-client";
+import GreEndpointEditor from "./gre-endpoint-client";
+import GreEndpointHistory from "./gre-endpoint-history-client";
+import TunnelTraffic from "./traffic-client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,31 +38,62 @@ export default async function TunnelDetail({ params }: Params) {
       wg_endpoint: string | null;
       wg_port: number | null;
       private_subnet: string;
-      ovpn_endpoint: string | null;
-      ovpn_port: number | null;
-      sstp_endpoint: string | null;
-      ovpn_client_cert: string | null;
-      ovpn_client_key_encrypted: string | null;
-      config_blob: string | null;
       created_at: Date;
       next_billing_at: Date;
+      speed_tier: string;
+      remote_endpoint_host: string | null;
+      remote_endpoint_ip: string | null;
+      remote_endpoint_resolved_at: Date | null;
+      gre_key: number | null;
+      gw_public_ip: string | null;
+      last_handshake_at: string | null;
     }[]
   >`
     SELECT t.name, t.description, t.status, t.protocol, host(t.private_ip) AS private_ip,
            t.wg_private_key_encrypted, g.wg_public_key AS gw_pub,
            g.wg_endpoint, g.wg_port, g.private_subnet::text AS private_subnet,
-           g.ovpn_endpoint, g.ovpn_port, g.sstp_endpoint,
-           t.ovpn_client_cert, t.ovpn_client_key_encrypted, t.config_blob,
-           t.created_at, t.next_billing_at
+           t.created_at, t.next_billing_at, t.speed_tier,
+           t.remote_endpoint_host,
+           host(t.remote_endpoint_ip) AS remote_endpoint_ip,
+           t.remote_endpoint_resolved_at, t.gre_key,
+           host(g.bgp_router_id) AS gw_public_ip,
+           t.last_handshake_at::text AS last_handshake_at
     FROM tunnels t JOIN vpn_gateways g ON g.id = t.gateway_id
     WHERE t.id = ${id} AND t.user_id = ${sess.userId}
       AND t.deleted_at IS NULL`;
   if (!t) notFound();
+  const isGre = t.protocol === "gre";
 
   const pubIps = await sql<{ ip: string; block_id: string | null }[]>`
     SELECT host(ip_address) AS ip, block_id::text AS block_id FROM public_ips
     WHERE tunnel_id = ${id} AND status = 'allocated'
     ORDER BY ip_address`;
+  // Sold blocks route as their CIDR (e.g. a /25), not N separate /32s.
+  const blockCidrs = (
+    await sql<{ cidr: string }[]>`
+      SELECT DISTINCT b.block::text AS cidr
+      FROM ip_blocks b JOIN public_ips p ON p.block_id = b.id
+      WHERE p.tunnel_id = ${id} AND p.status = 'allocated'
+      ORDER BY 1`
+  ).map((r) => r.cidr);
+  const singleIps = pubIps.filter((p) => !p.block_id).map((p) => p.ip);
+  // Routable prefixes shown in the config + the IP list (singles/32 + blocks).
+  const routableCidrs = [...singleIps.map((ip) => `${ip}/32`), ...blockCidrs];
+
+  // Online status:
+  //   WG  → derived from the latest connection_events (peer-side reporter).
+  //   GRE → derived from the monitor loop's last successful ping, which
+  //         stamps last_handshake_at every 60s. 3 min = one missed cycle.
+  let isOnline = false;
+  if (isGre) {
+    const hs = t.last_handshake_at ? new Date(t.last_handshake_at).getTime() : 0;
+    isOnline = hs > 0 && Date.now() - hs < 3 * 60_000;
+  } else {
+    const [lastEv] = await sql<{ event: string; created_at: Date }[]>`
+      SELECT event, created_at FROM connection_events
+      WHERE tunnel_id = ${id} ORDER BY created_at DESC LIMIT 1`;
+    isOnline = lastEv ? lastEv.event !== "disconnect" : false;
+  }
 
   const others = await sql<{ id: string; name: string }[]>`
     SELECT id, name FROM tunnels
@@ -69,57 +105,40 @@ export default async function TunnelDetail({ params }: Params) {
     : t.status === "provisioning" ? "badge-warning"
     : t.status === "suspended" ? "badge-danger" : "badge-neutral";
 
-  const proto = t.protocol;
-  const protoMeta =
-    proto === "openvpn" ? { label: "OpenVPN", badge: "badge-info" }
-    : proto === "sstp" ? { label: "SSTP", badge: "badge-warning" }
+  const protoMeta = isGre
+    ? { label: "GRE", badge: "badge-warning" }
     : { label: "WireGuard", badge: "badge-primary" };
 
-  // WireGuard config + QR (only for WG tunnels; gw_pub is null for OVPN/SSTP).
+  // WireGuard config + QR — skip entirely for GRE tunnels (no keys).
   let wgConf: string | null = null;
   let qrDataUrl: string | null = null;
-  if (proto === "wireguard" && t.gw_pub) {
-    const allowedIPs = [t.private_subnet, ...pubIps.map((p) => `${p.ip}/32`)].join(", ");
+  if (!isGre && t.gw_pub) {
+    const allowedIPs = [t.private_subnet, ...routableCidrs].join(", ");
     const privateKey = decryptSecret(t.wg_private_key_encrypted);
     wgConf =
       `[Interface]\nPrivateKey = ${privateKey}\nAddress = ${t.private_ip}/32\n\n` +
       `[Peer]\nPublicKey = ${t.gw_pub}\nEndpoint = ${t.wg_endpoint}:${t.wg_port}\n` +
       `AllowedIPs = ${allowedIPs}\nPersistentKeepalive = 25\n`;
-    qrDataUrl = await QRCode.toDataURL(wgConf, {
-      margin: 1, scale: 6, color: { dark: "#0f172a", light: "#ffffff" },
-    });
-  }
-
-  // OpenVPN raw .ovpn — assembled from the cached creds (no agent call). Only
-  // available once the .ovpn has been downloaded at least once (creds cached).
-  let ovpnConf: string | null = null;
-  if (proto === "openvpn" && t.ovpn_client_cert && t.ovpn_client_key_encrypted && t.config_blob) {
+    // A WG config with many public IPs (e.g. a /24 block) can exceed the QR
+    // capacity — that's fine, just skip the QR (.conf download still works).
     try {
-      const node = JSON.parse(t.config_blob) as { ca: string };
-      const host = String(t.ovpn_endpoint).split(":")[0];
-      const clientKey = decryptSecret(t.ovpn_client_key_encrypted);
-      ovpnConf =
-        `client\ndev tun\nproto udp\nremote ${host} ${t.ovpn_port ?? 1194}\n` +
-        `resolv-retry infinite\nnobind\npersist-key\npersist-tun\n` +
-        `remote-cert-tls server\ncipher AES-256-GCM\n` +
-        `data-ciphers AES-256-GCM:CHACHA20-POLY1305\nauth SHA256\nverb 3\nmssfix 1400\n\n` +
-        `<ca>\n${node.ca.trim()}\n</ca>\n` +
-        `<cert>\n${t.ovpn_client_cert.trim()}\n</cert>\n` +
-        `<key>\n${clientKey.trim()}\n</key>\n`;
-    } catch { /* malformed cache → no raw view */ }
+      qrDataUrl = await QRCode.toDataURL(wgConf, {
+        margin: 1, scale: 6, color: { dark: "#0f172a", light: "#ffffff" },
+      });
+    } catch {
+      qrDataUrl = null;
+    }
   }
 
-  // SSTP credentials (shown so the user can configure manually too).
-  const sstpUser = proto === "sstp" ? t.ovpn_client_cert : null;
-  const sstpPass =
-    proto === "sstp" && t.ovpn_client_key_encrypted
-      ? decryptSecret(t.ovpn_client_key_encrypted)
-      : null;
-
-  const endpoint =
-    proto === "openvpn" ? `${t.ovpn_endpoint} (UDP 1194)`
-    : proto === "sstp" ? `${t.sstp_endpoint} (TCP 443)`
-    : t.wg_endpoint ? `${t.wg_endpoint}:${t.wg_port}` : "—";
+  const endpoint = isGre
+    ? (t.gw_public_ip ? `${t.gw_public_ip} (GRE)` : "GRE")
+    : (t.wg_endpoint ? `${t.wg_endpoint}:${t.wg_port}` : "—");
+  // Derive customer-end IP for GRE display (gwEnd + 1 in the /30).
+  const greCustomerEnd = isGre ? ((): string => {
+    const o = t.private_ip.split(".").map(Number);
+    const n = (((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0) + 1;
+    return [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join(".");
+  })() : "";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
@@ -128,15 +147,16 @@ export default async function TunnelDetail({ params }: Params) {
           <ArrowLeft size={14} strokeWidth={2} /> Dashboard
         </Link>
         <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-          <h1 className="page-title">{t.name}</h1>
+          <EditableName tunnelId={id} initial={t.name} />
           <span className={`badge ${protoMeta.badge}`}>{protoMeta.label}</span>
           <span className={`badge ${statusBadge}`}>{t.status}</span>
+          <span className={`badge ${isOnline ? "badge-success" : "badge-neutral"}`}>
+            {isOnline ? "● Online" : "○ Offline"}
+          </span>
         </div>
-        {t.description && (
-          <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 4 }}>{t.description}</p>
-        )}
+        <EditableDescription tunnelId={id} initial={t.description} />
         <p className="page-subtitle mono" style={{ fontSize: 12 }}>
-          {id} · private {t.private_ip} · {endpoint} · next billing {new Date(t.next_billing_at).toISOString().slice(0, 10)}
+          {id} · private {t.private_ip} · {endpoint} · next billing {fmtDate(t.next_billing_at)}
         </p>
       </div>
 
@@ -144,10 +164,46 @@ export default async function TunnelDetail({ params }: Params) {
       <div className="card">
         <h2 className="section-title">Client config</h2>
         <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 2 }}>
-          {proto === "wireguard" && "ดาวน์โหลด .conf หรือสแกน QR ด้วย WireGuard mobile app · หรือใช้ Mikrotik script"}
-          {proto === "openvpn" && "ดาวน์โหลด .ovpn เข้า OpenVPN client (มือถือ/คอม) · Mikrotik ใช้ .rsc (อัปโหลดไฟล์ .ovpn ก่อน import)"}
-          {proto === "sstp" && "SSTP วิ่งบน TLS:443 (ผ่าน firewall เข้มได้) · Mikrotik ใช้ .rsc · หรือกรอก user/pass ด้านล่างเอง"}
+          {isGre
+            ? "ดาวน์โหลด Mikrotik .rsc — paste ใน terminal ของ router (customer end อยู่ข้างล่าง)"
+            : "ดาวน์โหลด .conf หรือสแกน QR ด้วย WireGuard mobile app · หรือใช้ Mikrotik script"}
         </p>
+        {isGre && (
+          <div className="card-compact" style={{ marginTop: 12, padding: 12, fontSize: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 12px" }}>
+              <span style={{ color: "var(--color-text-muted)" }}>Server (our end):</span>
+              <span className="mono">{t.gw_public_ip ?? "—"}</span>
+              <span style={{ color: "var(--color-text-muted)" }}>Server tunnel IP:</span>
+              <span className="mono">{t.private_ip}/30</span>
+              <span style={{ color: "var(--color-text-muted)" }}>Customer tunnel IP:</span>
+              <span className="mono">{greCustomerEnd}/30</span>
+              <span style={{ color: "var(--color-text-muted)" }}>Endpoint (your router):</span>
+              <span className="mono" style={{ display: "inline-flex", alignItems: "center" }}>
+                {t.remote_endpoint_host ?? "—"}
+                {t.remote_endpoint_ip && t.remote_endpoint_host !== t.remote_endpoint_ip ? (
+                  <span style={{ color: "var(--color-text-muted)", marginLeft: 4 }}> → {t.remote_endpoint_ip}</span>
+                ) : null}
+                <GreEndpointEditor
+                  tunnelId={id}
+                  initialHost={t.remote_endpoint_host}
+                  initialIp={t.remote_endpoint_ip}
+                />
+              </span>
+              {t.remote_endpoint_resolved_at && (
+                <>
+                  <span style={{ color: "var(--color-text-muted)" }}>Last DNS resolve:</span>
+                  <span>
+                    {fmtDateTimeSec(t.remote_endpoint_resolved_at)}
+                    <GreEndpointHistory tunnelId={id} />
+                  </span>
+                </>
+              )}
+            </div>
+            <p style={{ marginTop: 8, fontSize: 11, color: "var(--color-warning)" }}>
+              ⚠ GRE ไม่มี encryption — ทราฟฟิกวิ่งเปิดเผยบน internet
+            </p>
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: qrDataUrl ? "auto 1fr" : "1fr", gap: 24, marginTop: 16, alignItems: "start" }}>
           {qrDataUrl && (
@@ -160,7 +216,16 @@ export default async function TunnelDetail({ params }: Params) {
           )}
           <div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {proto === "wireguard" && (
+              {isGre ? (
+                <>
+                  <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`} className="btn btn-primary">
+                    <FileDown size={16} /> Mikrotik .rsc
+                  </a>
+                  <a href={`/v1/tunnels/${id}/config`} download={`${t.name}.gre.txt`} className="btn btn-secondary">
+                    <FileDown size={16} /> Plain text summary
+                  </a>
+                </>
+              ) : (
                 <>
                   <a href={`/v1/tunnels/${id}/config`} download={`${t.name}.conf`} className="btn btn-primary">
                     <FileDown size={16} /> Download .conf
@@ -170,31 +235,10 @@ export default async function TunnelDetail({ params }: Params) {
                   </a>
                 </>
               )}
-              {proto === "openvpn" && (
-                <>
-                  <a href={`/v1/tunnels/${id}/config?format=ovpn`} download={`${t.name}.ovpn`} className="btn btn-primary">
-                    <FileDown size={16} /> Download .ovpn
-                  </a>
-                  <a href={`/v1/tunnels/${id}/config?format=mikrotik`} download={`${t.name}.ovpn.rsc`} className="btn btn-secondary">
-                    <FileDown size={16} /> Mikrotik script
-                  </a>
-                </>
-              )}
-              {proto === "sstp" && (
-                <a href={`/v1/tunnels/${id}/config?format=sstp`} download={`${t.name}.sstp.rsc`} className="btn btn-primary">
-                  <FileDown size={16} /> Mikrotik script (.rsc)
-                </a>
-              )}
             </div>
 
-            {proto === "wireguard" && t.wg_endpoint && (
+            {!isGre && t.wg_endpoint && (
               <ConnInfo server={String(t.wg_endpoint)} port={`${t.wg_port ?? 51820}`} />
-            )}
-            {proto === "openvpn" && (
-              <ConnInfo server={String(t.ovpn_endpoint)} port={`${t.ovpn_port ?? 1194}`} />
-            )}
-            {proto === "sstp" && (
-              <SstpCreds server={String(t.sstp_endpoint)} port="443" username={sstpUser} password={sstpPass} />
             )}
 
             <div className="card-compact" style={{ marginTop: 16, padding: 12 }}>
@@ -207,7 +251,7 @@ export default async function TunnelDetail({ params }: Params) {
                 </p>
               ) : (
                 <ul className="mono" style={{ fontSize: 12, marginTop: 6, paddingLeft: 18 }}>
-                  {pubIps.map((p) => <li key={p.ip} style={{ marginBottom: 2 }}>{p.ip}/32</li>)}
+                  {routableCidrs.map((c) => <li key={c} style={{ marginBottom: 2 }}>{c}</li>)}
                 </ul>
               )}
             </div>
@@ -215,21 +259,26 @@ export default async function TunnelDetail({ params }: Params) {
         </div>
       </div>
 
+      <TunnelTraffic tunnelId={id} />
+
       <TunnelActions
         tunnelId={id}
         tunnelName={t.name}
+        privateIp={t.private_ip}
+        currentTier={t.speed_tier}
+        protocol={t.protocol}
         publicIps={pubIps.map((p) => ({ ip: p.ip, blockId: p.block_id }))}
         others={others}
       />
 
-      {(wgConf || ovpnConf) && (
+      {wgConf && (
         <div className="card">
           <details>
             <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--color-text-muted)" }}>
-              Show raw {wgConf ? ".conf" : ".ovpn"} <span style={{ color: "var(--color-danger)" }}>(contains private key)</span>
+              Show raw .conf <span style={{ color: "var(--color-danger)" }}>(contains private key)</span>
             </summary>
             <pre className="mono" style={{ marginTop: 12, padding: 12, background: "var(--color-bg)", border: "1px solid var(--color-border)", borderRadius: 8, fontSize: 12, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-              {wgConf ?? ovpnConf}
+              {wgConf}
             </pre>
           </details>
         </div>

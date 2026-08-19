@@ -1,17 +1,95 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Search, UserCircle2, Cable } from "lucide-react";
+import { Search, UserCircle2, Cable, Globe, Boxes, Check } from "lucide-react";
+import { fmtDate, fmtDateTime, fmtLogTime } from "../../_lib/datetime";
 
 interface User {
   id: string; email: string; name: string | null; status: string;
   lastLoginAt: string | null; balanceSatang: number; createdAt: string;
 }
+interface TunnelItem { id: string; name: string; status: string; speed_tier: string; price_satang: number | null; private_ip: string; created_at: string; online?: boolean; last_seen_at?: string | null }
+interface IpItem { ip: string; status: string; price_satang: number | null; tunnel_name: string | null }
+interface BlockItem { id: string; cidr: string; block_size: number; price_satang: number | null; status: string }
 interface UserDetail {
   user: User & { lifetimeTopupSatang: number; lifetimeSpentSatang: number };
-  tunnels: { id: string; name: string; status: string; speed_tier: string; private_ip: string; created_at: string }[];
+  tunnels: TunnelItem[];
+  ips: IpItem[];
+  blocks: BlockItem[];
 }
 
 const fmt = (s: number) => `฿${(s / 100).toFixed(2)}`;
+
+interface ConnEvent { id: string; protocol: string; event: string; clientIp: string | null; detail: string | null; createdAt: string }
+
+// Lazy per-tunnel connection log (connect/disconnect/ip_change history).
+function ConnLog({ tunnelId }: { tunnelId: string }) {
+  const [events, setEvents] = useState<ConnEvent[] | null>(null);
+  const evColor = (e: string) =>
+    e === "connect" ? "var(--color-success, #16a34a)"
+    : e === "disconnect" ? "var(--color-danger)"
+    : "var(--color-warning, #d97706)";
+  async function load() {
+    if (events !== null) return;
+    const r = await fetch(`/v1/admin/tunnels/${tunnelId}/connection-events?limit=50`, { credentials: "same-origin" });
+    if (r.ok) setEvents((await r.json()).events ?? []);
+  }
+  return (
+    <details onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) void load(); }}
+      style={{ marginTop: 4 }}>
+      <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--color-primary)" }}>connection log</summary>
+      {events === null ? (
+        <p style={{ fontSize: 11, color: "var(--color-text-muted)", margin: "4px 0" }}>กำลังโหลด…</p>
+      ) : events.length === 0 ? (
+        <p style={{ fontSize: 11, color: "var(--color-text-muted)", margin: "4px 0" }}>ยังไม่มี event</p>
+      ) : (
+        <div className="mono" style={{ fontSize: 11, marginTop: 6, display: "flex", flexDirection: "column", gap: 3, maxHeight: 200, overflowY: "auto" }}>
+          {events.map((ev) => (
+            <div key={ev.id} style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+              <span style={{ color: "var(--color-text-muted)", whiteSpace: "nowrap" }}>
+                {fmtLogTime(ev.createdAt)}
+              </span>
+              <span style={{ color: evColor(ev.event), fontWeight: 600, minWidth: 70 }}>{ev.event}</span>
+              <span>{ev.clientIp ?? ""}</span>
+              <span style={{ color: "var(--color-text-muted)" }}>{ev.detail ?? ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </details>
+  );
+}
+
+// Inline locked-price editor for one purchased item.
+function PriceEditor({ endpoint, satang, onSaved }: { endpoint: string; satang: number | null; onSaved: () => void }) {
+  const [val, setVal] = useState((Number(satang ?? 0) / 100).toString());
+  const [busy, setBusy] = useState(false);
+  const [ok, setOk] = useState(false);
+  useEffect(() => { setVal((Number(satang ?? 0) / 100).toString()); setOk(false); }, [satang]);
+  const dirty = Math.round(Number(val) * 100) !== Number(satang ?? 0);
+  async function save() {
+    setBusy(true); setOk(false);
+    try {
+      const r = await fetch(endpoint, {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priceSatang: Math.round(Number(val) * 100) }),
+      });
+      if (r.ok) { setOk(true); onSaved(); }
+    } finally { setBusy(false); }
+  }
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+      <span style={{ color: "var(--color-text-muted)", fontSize: 12 }}>฿</span>
+      <input className="input" type="number" min={0} step={1} value={val}
+        onChange={(e) => setVal(e.target.value)}
+        style={{ width: 78, padding: "3px 6px", fontSize: 12 }} />
+      <button className="btn btn-sm" disabled={busy || !dirty} onClick={save}
+        style={{ padding: "3px 7px" }} title="บันทึกราคา">
+        {ok && !dirty ? <Check size={13} /> : "บันทึก"}
+      </button>
+    </span>
+  );
+}
 
 export default function AdminUsers() {
   const [q, setQ] = useState("");
@@ -81,7 +159,7 @@ export default function AdminUsers() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 500, color: "var(--color-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.email}</div>
                     <div className="mono" style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-                      {fmt(u.balanceSatang)} · {u.lastLoginAt ? new Date(u.lastLoginAt).toISOString().slice(0, 10) : "never"}
+                      {fmt(u.balanceSatang)} · {u.lastLoginAt ? fmtDate(u.lastLoginAt) : "never"}
                     </div>
                   </div>
                   <span className={u.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{u.status}</span>
@@ -140,25 +218,82 @@ export default function AdminUsers() {
                 {msg && <p style={{ marginTop: 8, fontSize: 13, color: msg.startsWith("✓") ? "var(--color-success)" : "var(--color-danger)" }}>{msg}</p>}
               </div>
 
+              {/* Purchased items — locked prices, editable per item (grandfathered) */}
               <div style={{ marginTop: 16 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
                   <Cable size={14} strokeWidth={2} /> Tunnels ({selected.tunnels.length})
                 </div>
-                <table className="table-default" style={{ marginTop: 6, fontSize: 13 }}>
-                  <tbody>
-                    {selected.tunnels.length === 0 && (
-                      <tr><td style={{ color: "var(--color-text-muted)", padding: 12, textAlign: "center" }}>ไม่มี tunnel</td></tr>
-                    )}
+                {selected.tunnels.length === 0 ? (
+                  <p style={{ color: "var(--color-text-muted)", fontSize: 12, padding: "8px 0" }}>ไม่มี tunnel</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {selected.tunnels.map((t) => (
-                      <tr key={t.id}>
-                        <td style={{ fontWeight: 500 }}>{t.name}</td>
-                        <td className="mono" style={{ color: "var(--color-text-muted)" }}>{t.private_ip}</td>
-                        <td>{t.speed_tier.replace("tier_", "")}</td>
-                        <td><span className={t.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{t.status}</span></td>
-                      </tr>
+                      <div key={t.id} className="card-compact" style={{ padding: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontWeight: 600, fontSize: 13 }}>{t.name}</span>
+                          <span className="mono" style={{ fontSize: 12, color: "var(--color-text-muted)" }}>{t.private_ip}</span>
+                          <span className="badge badge-neutral">{t.speed_tier.replace("tier_", "")}</span>
+                          <span className={t.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{t.status}</span>
+                          <span className={t.online ? "badge badge-success" : "badge badge-neutral"}
+                            title={t.last_seen_at ? `last seen ${fmtDateTime(t.last_seen_at)}` : "no connection yet"}>
+                            {t.online ? "● online" : "○ offline"}
+                          </span>
+                          <div style={{ marginLeft: "auto" }}>
+                            <PriceEditor endpoint={`/v1/admin/tunnels/${t.id}/price`} satang={t.price_satang}
+                              onSaved={() => open(selected.user)} />
+                          </div>
+                        </div>
+                        <ConnLog tunnelId={t.id} />
+                      </div>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                  <Globe size={14} strokeWidth={2} /> Public IPs ({selected.ips.length})
+                </div>
+                {selected.ips.length === 0 ? (
+                  <p style={{ color: "var(--color-text-muted)", fontSize: 12, padding: "8px 0" }}>ไม่มี single IP</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {selected.ips.map((p) => (
+                      <div key={p.ip} className="card-compact" style={{ padding: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>{p.ip}</span>
+                        <span style={{ color: "var(--color-text-muted)", fontSize: 12 }}>{p.tunnel_name ?? "— unassigned —"}</span>
+                        <span className={p.status === "allocated" ? "badge badge-success" : "badge badge-neutral"}>{p.status}</span>
+                        <div style={{ marginLeft: "auto" }}>
+                          <PriceEditor endpoint={`/v1/admin/ips/${p.ip}/price`} satang={p.price_satang}
+                            onSaved={() => open(selected.user)} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-muted)", display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                  <Boxes size={14} strokeWidth={2} /> IP Blocks ({selected.blocks.length})
+                </div>
+                {selected.blocks.length === 0 ? (
+                  <p style={{ color: "var(--color-text-muted)", fontSize: 12, padding: "8px 0" }}>ไม่มี block</p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {selected.blocks.map((b) => (
+                      <div key={b.id} className="card-compact" style={{ padding: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                        <span className="mono" style={{ fontWeight: 600, fontSize: 13 }}>{b.cidr}</span>
+                        <span style={{ color: "var(--color-text-muted)", fontSize: 12 }}>{b.block_size} IPs</span>
+                        <span className={b.status === "active" ? "badge badge-success" : "badge badge-neutral"}>{b.status}</span>
+                        <div style={{ marginLeft: "auto" }}>
+                          <PriceEditor endpoint={`/v1/admin/ip-blocks/${b.id}/price`} satang={b.price_satang}
+                            onSaved={() => open(selected.user)} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           )}

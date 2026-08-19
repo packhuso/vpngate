@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { fmtDateTime } from "../../_lib/datetime";
 import { ArrowDownToLine, ArrowUpFromLine, Gift, TrendingUp, TrendingDown } from "lucide-react";
 
 interface Wallet {
@@ -161,7 +162,7 @@ export default function WalletPage() {
             )}
             {filtered.map((t) => (
               <tr key={t.id}>
-                <td style={{ color: "var(--color-text-muted)" }}>{new Date(t.createdAt).toISOString().slice(0, 16).replace("T", " ")}</td>
+                <td style={{ color: "var(--color-text-muted)" }}>{fmtDateTime(t.createdAt)}</td>
                 <td style={{ fontSize: 11 }}>
                   <span className="badge badge-neutral">{t.type}</span>
                 </td>

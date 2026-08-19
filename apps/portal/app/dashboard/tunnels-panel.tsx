@@ -1,6 +1,8 @@
 "use client";
 import { useEffect, useState } from "react";
-import { Plus, Trash2, FileDown, Settings2, Shield, KeyRound, Lock } from "lucide-react";
+import { fmtDateTime } from "../_lib/datetime";
+import { Plus, Trash2, FileDown, Settings2, Shield, Radar, Cable } from "lucide-react";
+import PingDialog from "./tunnels/ping-dialog-client";
 import { notifyDataChanged, onDataChanged, confirmIpChange } from "../_components/refresh-bus";
 
 interface PubIp { ip: string; blockId: string | null }
@@ -14,21 +16,27 @@ interface Tunnel {
   privateIp: string;
   createdAt: string;
   publicIps: PubIp[];
+  online?: boolean;
+  lastSeenAt?: string | null;
 }
 
 // name = config-file identifier → letters/digits/-/_ only. Description holds any-language text.
 const NAME_RE = /^[A-Za-z0-9_-]{1,100}$/;
 
-const TIERS = [
-  { v: "tier_100mb", label: "100 Mbps · ฿100/31d" },
-  { v: "tier_500mb", label: "500 Mbps · ฿200/31d" },
-  { v: "tier_1gb",   label: "1 Gbps · ฿300/31d" },
-];
+const TIER_MBPS: Record<string, string> = {
+  tier_100mb: "100 Mbps",
+  tier_500mb: "500 Mbps",
+  tier_1gb: "1 Gbps",
+};
+const bahtFmt = (satang: number) =>
+  (satang / 100).toLocaleString("en-US", { maximumFractionDigits: 0 });
+
+interface SpeedPrice { tier: string; priceSatang: number; sortOrder: number }
+interface AllowCell { protocol: string; tier: string; enabled: boolean }
 
 const PROTOCOLS = [
   { v: "wireguard", label: "WireGuard", icon: Shield, hint: "เร็ว, เบา, แนะนำ" },
-  { v: "openvpn", label: "OpenVPN", icon: KeyRound, hint: "เข้ากันได้กว้าง (router/firewall เก่า)" },
-  { v: "sstp", label: "SSTP", icon: Lock, hint: "วิ่งบน TLS:443 ผ่าน firewall เข้มได้" },
+  { v: "gre", label: "GRE", icon: Cable, hint: "สำหรับ Mikrotik / router (ไม่ encrypt)" },
 ];
 
 const statusBadge = (s: string) =>
@@ -43,9 +51,14 @@ export default function TunnelsPanel() {
   const [description, setDescription] = useState("");
   const [tier, setTier] = useState("tier_100mb");
   const [protocol, setProtocol] = useState("wireguard");
+  // GRE-only: customer's endpoint (domain or IP). Ignored for other protocols.
+  const [remoteEndpointHost, setRemoteEndpointHost] = useState("");
   const [available, setAvailable] = useState<string[]>(["wireguard"]);
+  const [speedPrices, setSpeedPrices] = useState<SpeedPrice[]>([]);
+  const [allow, setAllow] = useState<AllowCell[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [pingTarget, setPingTarget] = useState<{ id: string; name: string; privateIp: string } | null>(null);
 
   async function load() {
     const r = await fetch("/v1/tunnels", { credentials: "same-origin" });
@@ -61,9 +74,29 @@ export default function TunnelsPanel() {
       if (!protos.includes(protocol)) setProtocol(protos[0] ?? "wireguard");
     }
   }
-  useEffect(() => { void load(); void loadOptions(); }, []);
+  async function loadPricing() {
+    const r = await fetch("/v1/billing/pricing", { credentials: "same-origin" });
+    if (r.ok) {
+      const d = await r.json();
+      setSpeedPrices((d.speed ?? []).sort((a: SpeedPrice, b: SpeedPrice) => a.sortOrder - b.sortOrder));
+      setAllow(d.allow ?? []);
+    }
+  }
+  useEffect(() => { void load(); void loadOptions(); void loadPricing(); }, []);
   // refresh when ANY panel mutates data (e.g. an IP is assigned in IpsPanel)
   useEffect(() => onDataChanged(() => { void load(); }), []);
+
+  // Tiers the selected protocol may sell (admin allow matrix) + their prices.
+  const tiers = speedPrices
+    .filter((s) => allow.some((a) => a.protocol === protocol && a.tier === s.tier && a.enabled))
+    .map((s) => ({
+      v: s.tier,
+      label: `${TIER_MBPS[s.tier] ?? s.tier} · ฿${bahtFmt(s.priceSatang)}/31d`,
+    }));
+  // keep the selected tier valid for the current protocol
+  useEffect(() => {
+    if (tiers.length && !tiers.some((t) => t.v === tier)) setTier(tiers[0].v);
+  }, [protocol, speedPrices, allow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -75,25 +108,39 @@ export default function TunnelsPanel() {
       setErr(`ชื่อ "${name}" ถูกใช้แล้ว — ตั้งชื่ออื่น`);
       return;
     }
-    const tierLabel = TIERS.find((t) => t.v === tier)?.label ?? tier;
-    const protoLabel = protocol === "openvpn" ? "OpenVPN" : "WireGuard";
+    const tierLabel = tiers.find((t) => t.v === tier)?.label ?? tier;
+    const protoLabel = protocol === "gre" ? "GRE" : "WireGuard";
+    if (protocol === "gre") {
+      if (!remoteEndpointHost.trim()) {
+        setErr("กรอก endpoint host (domain หรือ IP) ของ router คุณ");
+        return;
+      }
+    }
+    const greNote = protocol === "gre"
+      ? `\nEndpoint ปลายทาง: ${remoteEndpointHost.trim()}\n` +
+        `⚠ GRE ไม่มี encryption — ทราฟฟิกวิ่งเปิดเผยบน internet`
+      : "";
     if (!confirm(
       `ยืนยันการสร้าง Tunnel\n\n` +
       `ชื่อ: ${name}\n` +
       `ชนิด: ${protoLabel}\n` +
-      `แพ็กเกจ: ${tierLabel}\n\n` +
+      `แพ็กเกจ: ${tierLabel}${greNote}\n\n` +
       `⚠ จะตัดเงินค่า subscription จาก wallet ทันที และไม่คืนเงิน`
     )) return;
     setBusy(true); setErr(null);
     try {
+      const body: Record<string, unknown> = {
+        name, description: description || undefined, speedTier: tier, protocol,
+      };
+      if (protocol === "gre") body.remoteEndpointHost = remoteEndpointHost.trim();
       const r = await fetch("/v1/tunnels", {
         method: "POST", credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, description: description || undefined, speedTier: tier, protocol }),
+        body: JSON.stringify(body),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j?.message?.message ?? j?.message ?? "failed");
-      setName(""); setDescription("");
+      setName(""); setDescription(""); setRemoteEndpointHost("");
       notifyDataChanged();
     } catch (e) { setErr((e as Error).message); }
     finally { setBusy(false); }
@@ -145,14 +192,7 @@ export default function TunnelsPanel() {
 
   return (
     <section className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
-        <div>
-          <h2 className="section-title">Tunnels</h2>
-          <p style={{ fontSize: 13, color: "var(--color-text-muted)", marginTop: 2 }}>
-            แต่ละ tunnel = 1 WireGuard peer. มี speed tier ของตัวเอง, public IP มาผูก/ปลดได้
-          </p>
-        </div>
-      </div>
+      <h2 className="section-title" style={{ marginBottom: 16 }}>สร้าง tunnel ใหม่</h2>
 
       <form onSubmit={create} style={{ marginBottom: 16 }}>
         {/* Protocol picker — segmented control. OpenVPN auto-enables when an
@@ -212,9 +252,11 @@ export default function TunnelsPanel() {
                 </span>
               </div>
               <select className="input" value={tier} onChange={(e) => setTier(e.target.value)} style={{ flex: "0 1 220px", minWidth: 200 }}>
-                {TIERS.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
+                {tiers.length === 0
+                  ? <option value="">— ไม่มีแพ็กเกจสำหรับ protocol นี้ —</option>
+                  : tiers.map((t) => <option key={t.v} value={t.v}>{t.label}</option>)}
               </select>
-              <button disabled={busy} className="btn btn-primary" type="submit">
+              <button disabled={busy || tiers.length === 0 || !tier} className="btn btn-primary" type="submit">
                 <Plus size={16} />
                 {busy ? "Creating…" : "New tunnel"}
               </button>
@@ -224,8 +266,28 @@ export default function TunnelsPanel() {
         <input className="input" placeholder="คำอธิบาย (ใส่ภาษาไทยได้ เช่น เราเตอร์บ้าน ชั้น 2) — ไม่บังคับ"
           value={description} onChange={(e) => setDescription(e.target.value)} maxLength={300}
           style={{ width: "100%", marginTop: 8 }} />
+        {protocol === "gre" && (
+          <div style={{ marginTop: 8 }}>
+            <input
+              className="input"
+              required
+              placeholder="Endpoint ของ router คุณ (เช่น home.dyndns.org หรือ 1.2.3.4)"
+              value={remoteEndpointHost}
+              onChange={(e) => setRemoteEndpointHost(e.target.value)}
+              maxLength={253}
+              style={{ width: "100%" }}
+            />
+            <span style={{ display: "block", fontSize: 11, color: "var(--color-text-muted)", marginTop: 4 }}>
+              ถ้า IP ของคุณเปลี่ยน (dynamic ISP) ให้ใช้ DDNS domain — server จะ resolve ใหม่อัตโนมัติเมื่อ tunnel ล่ม
+            </span>
+          </div>
+        )}
       </form>
       {err && <p style={{ color: "var(--color-danger)", fontSize: 13, marginBottom: 12 }}>⚠ {err}</p>}
+
+      <h2 className="section-title" style={{ marginTop: 24, marginBottom: 12, paddingTop: 16, borderTop: "1px solid var(--color-border)" }}>
+        รายการ tunnel {tunnels.length > 0 && <span style={{ color: "var(--color-text-muted)", fontWeight: 400 }}>({tunnels.length})</span>}
+      </h2>
 
       {tunnels.length === 0 ? (
         <div style={{ textAlign: "center", padding: "32px 16px", color: "var(--color-text-muted)", fontSize: 14, background: "var(--color-bg)", borderRadius: 10, border: "1px dashed var(--color-border)" }}>
@@ -267,40 +329,44 @@ export default function TunnelsPanel() {
                   </span>
                   <span className="mono" style={{ fontSize: 12, color: "var(--color-text-muted)" }}>{t.privateIp}</span>
                   <span className="badge-neutral badge">{t.speedTier.replace("tier_", "")}</span>
-                  <span className={t.protocol === "openvpn" ? "badge badge-info" : t.protocol === "sstp" ? "badge badge-warning" : "badge badge-primary"}>
-                    {t.protocol === "openvpn" ? "OpenVPN" : t.protocol === "sstp" ? "SSTP" : "WireGuard"}
-                  </span>
+                  {t.protocol === "gre" ? (
+                    <span className="badge badge-warning">GRE</span>
+                  ) : (
+                    <span className="badge badge-primary">WireGuard</span>
+                  )}
                   <span className={`badge ${statusBadge(t.status)}`}>{t.status}</span>
+                  <span className={`badge ${t.online ? "badge-success" : "badge-neutral"}`}
+                    title={t.lastSeenAt ? `last seen ${fmtDateTime(t.lastSeenAt)}` : "no connection yet"}>
+                    {t.online ? "● online" : "○ offline"}
+                  </span>
 
                   <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                    {t.status === "active" && (t.protocol === "openvpn" ? (
-                      <>
-                        <a href={`/v1/tunnels/${t.id}/config?format=ovpn`} download={`${t.name}.ovpn`}
-                          className="btn btn-secondary btn-sm" title="OpenVPN .ovpn">
-                          <FileDown size={14} />.ovpn
-                        </a>
-                        <a href={`/v1/tunnels/${t.id}/config?format=mikrotik`} download={`${t.name}.ovpn.rsc`}
-                          className="btn btn-secondary btn-sm" title="Mikrotik script (RouterOS 7.17+)">
-                          <FileDown size={14} />Mikrotik
-                        </a>
-                      </>
-                    ) : t.protocol === "sstp" ? (
-                      <a href={`/v1/tunnels/${t.id}/config?format=sstp`} download={`${t.name}.sstp.rsc`}
-                        className="btn btn-secondary btn-sm" title="Mikrotik SSTP script">
-                        <FileDown size={14} />Mikrotik
-                      </a>
-                    ) : (
-                      <>
-                        <a href={`/v1/tunnels/${t.id}/config`} download={`${t.name}.conf`}
-                          className="btn btn-secondary btn-sm" title="WireGuard .conf">
-                          <FileDown size={14} />.conf
-                        </a>
+                    {t.status === "active" && (
+                      t.protocol === "gre" ? (
                         <a href={`/v1/tunnels/${t.id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`}
-                          className="btn btn-secondary btn-sm" title="Mikrotik script">
-                          <FileDown size={14} />Mikrotik
+                          className="btn btn-secondary btn-sm" title="Mikrotik GRE script">
+                          <FileDown size={14} />Mikrotik .rsc
                         </a>
-                      </>
-                    ))}
+                      ) : (
+                        <>
+                          <a href={`/v1/tunnels/${t.id}/config`} download={`${t.name}.conf`}
+                            className="btn btn-secondary btn-sm" title="WireGuard .conf">
+                            <FileDown size={14} />.conf
+                          </a>
+                          <a href={`/v1/tunnels/${t.id}/config?format=mikrotik`} download={`${t.name}.mikrotik.rsc`}
+                            className="btn btn-secondary btn-sm" title="Mikrotik script">
+                            <FileDown size={14} />Mikrotik
+                          </a>
+                        </>
+                      )
+                    )}
+                    {t.status === "active" && (
+                      <button onClick={() => setPingTarget({ id: t.id, name: t.name, privateIp: t.privateIp })}
+                        className="btn btn-ghost btn-sm" title="Ping จาก gateway → client (private IP)"
+                        style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                        <Radar size={14} /> Ping
+                      </button>
+                    )}
                     {t.status === "active" && (
                       <a href={`/dashboard/tunnels/${t.id}`} className="btn btn-ghost btn-sm" title="Manage">
                         <Settings2 size={14} />
@@ -353,6 +419,14 @@ export default function TunnelsPanel() {
             );
           })}
         </div>
+      )}
+      {pingTarget && (
+        <PingDialog
+          tunnelId={pingTarget.id}
+          tunnelName={pingTarget.name}
+          privateIp={pingTarget.privateIp}
+          onClose={() => setPingTarget(null)}
+        />
       )}
     </section>
   );

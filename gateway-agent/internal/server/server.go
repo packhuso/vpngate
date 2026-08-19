@@ -88,6 +88,22 @@ func (s *Server) Handler() http.Handler {
 	// OpenVPN client-cert issuance (OpenVPN backend only)
 	mux.HandleFunc("POST /v1/ovpn/clients/{publicKey}/cert", s.idempotent(s.handleIssueOvpnCert))
 
+	// Ping — control-plane requests this gateway ICMP-ping a peer's tunnel IP
+	mux.HandleFunc("POST /v1/ping", s.handlePing)
+
+	// FRR — replace a managed prefix-list (e.g. VPN-POOLS) atomically
+	mux.HandleFunc("POST /v1/frr/prefix-list/sync", s.idempotent(s.handlePrefixListSync))
+
+	// Routing status (read-only) — BGP peers + VPN-POOLS prefix-list contents
+	mux.HandleFunc("GET /v1/routing/status", s.handleRoutingStatus)
+
+	// GRE tunnels (Plain GRE, RFC 2784/2890) — one interface per peer.
+	mux.HandleFunc("GET /v1/gre/peers", s.handleListGrePeers)
+	mux.HandleFunc("POST /v1/gre/peers", s.idempotent(s.handleCreateGrePeer))
+	mux.HandleFunc("GET /v1/gre/peers/{peerId}", s.handleGetGrePeer)
+	mux.HandleFunc("PATCH /v1/gre/peers/{peerId}", s.idempotent(s.handlePatchGrePeer))
+	mux.HandleFunc("DELETE /v1/gre/peers/{peerId}", s.idempotent(s.handleDeleteGrePeer))
+
 	// Stats (polled by worker every 30s)
 	mux.HandleFunc("GET /v1/stats", s.handleStats)
 	mux.HandleFunc("GET /v1/stats/peers", s.handlePeerStats)

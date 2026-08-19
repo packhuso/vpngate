@@ -110,34 +110,51 @@ func (m *SSTPManager) writeRateFile(p *sstpPeer) {
 	}
 }
 
+// ifbFor is the dedicated ifb device mirroring a ppp interface's ingress. One
+// ifb per ppp link (each carries exactly one client) so upload gets a real HTB
+// queue. IFNAMSIZ(15) safe: "ifb_ppp99999" = 12 chars.
+func ifbFor(iface string) string { return "ifb_" + iface }
+
 // shapePPP applies a per-interface rate cap on a PPP link. Because each ppp
 // interface carries exactly one SSTP client, no per-IP u32 filters are needed —
-// the whole interface IS the client. Egress (download to client) is an HTB hard
-// cap + fq_codel leaf; ingress (upload from client) is an ingress policer. tc
-// state dies with the interface, so there is nothing to leak on disconnect.
+// the whole interface IS the client.
+//   - download (egress, to client): HTB hard cap + fq_codel leaf on the ppp iface.
+//   - upload (ingress, from client): redirect ingress to a dedicated ifb and
+//     HTB-shape it. A plain ingress policer DROPS bursts instead of queueing, so
+//     TCP repeatedly collapses cwnd and upload settles at ~30-50% of the cap;
+//     shaping on an ifb queues instead, letting TCP fill the pipe symmetrically.
+//
+// The ppp's own qdiscs die with the interface on disconnect; the ifb is named
+// after the ppp and is torn down here (re-apply) and by ip-down.d (disconnect).
 // kbit <= 0 clears any existing shaping (back to line rate).
 func shapePPP(iface string, kbit int) {
 	if iface == "" {
 		return
 	}
-	// always clear first so a tier change / removal is clean
+	ifb := ifbFor(iface)
+	// always tear down first so a tier change / removal is clean
 	runOK("tc", "qdisc", "del", "dev", iface, "root")
 	runOK("tc", "qdisc", "del", "dev", iface, "ingress")
+	runOK("ip", "link", "del", ifb) // drops the ifb's qdiscs with it
 	if kbit <= 0 {
 		return
 	}
 	rate := fmt.Sprintf("%dkbit", kbit)
-	// ~100ms of burst (kbit*1000/8/10 bytes = kbit*12.5 ≈ kbit/80 kbytes), floored.
-	burst := fmt.Sprintf("%dk", kbit/80+16)
-	// egress (download)
+	// download (egress)
 	runOK("tc", "qdisc", "add", "dev", iface, "root", "handle", "1:", "htb", "default", "10")
 	runOK("tc", "class", "add", "dev", iface, "parent", "1:", "classid", "1:10", "htb", "rate", rate, "ceil", rate)
 	runOK("tc", "qdisc", "add", "dev", iface, "parent", "1:10", "handle", "10:", "fq_codel")
-	// ingress (upload) policer
+	// upload (ingress) → dedicated ifb + HTB (queue, don't police)
+	runOK("modprobe", "ifb")
+	runOK("ip", "link", "add", ifb, "type", "ifb")
+	runOK("ip", "link", "set", ifb, "up")
 	runOK("tc", "qdisc", "add", "dev", iface, "handle", "ffff:", "ingress")
 	runOK("tc", "filter", "add", "dev", iface, "parent", "ffff:", "protocol", "all",
 		"u32", "match", "u32", "0", "0",
-		"police", "rate", rate, "burst", burst, "drop", "flowid", ":1")
+		"action", "mirred", "egress", "redirect", "dev", ifb)
+	runOK("tc", "qdisc", "add", "dev", ifb, "root", "handle", "1:", "htb", "default", "10")
+	runOK("tc", "class", "add", "dev", ifb, "parent", "1:", "classid", "1:10", "htb", "rate", rate, "ceil", rate)
+	runOK("tc", "qdisc", "add", "dev", ifb, "parent", "1:10", "handle", "10:", "fq_codel")
 }
 
 // pppIface returns the ppp interface currently carrying the fixed IP (i.e. the

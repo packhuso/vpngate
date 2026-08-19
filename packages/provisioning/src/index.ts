@@ -7,8 +7,35 @@ export * from "./ip-block";
 export * from "./delete-tunnel";
 export * from "./billing-scheduler";
 export * from "./notify";
-export * from "./ovpn-config";
-export * from "./sstp-config";
+export * from "./pricing";
+export * from "./connection-events";
+export * from "./admin-grant";
+export * from "./frr-sync";
+export * from "./change-tier";
+export * from "./traffic-sampler";
+export { enqueueEmailEvents } from "./email/enqueue";
+export { dispatchEmailEvents } from "./email/dispatcher";
+export {
+  provisionGreTunnel,
+  activateGreTunnel,
+  deleteGreTunnel,
+  resolveGreEndpoint,
+  updateGreEndpoint,
+  resolveHost,
+  peerIdFromTunnelId,
+  type CreateGreTunnelInput,
+  type CreateGreTunnelResult,
+} from "./gre";
+export {
+  monitorGreTunnels,
+  refreshStaleGreEndpoints,
+  type GreMonitorResult,
+} from "./gre-monitor";
+export {
+  reconcileGreOnGateway,
+  reconcileGreAllGateways,
+  type GreDriftReport,
+} from "./gre-drift";
 export {
   cidrContains,
   cidrsOverlap,

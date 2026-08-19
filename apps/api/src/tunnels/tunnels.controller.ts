@@ -6,14 +6,25 @@ import {
   Get,
   HttpCode,
   Param,
+  Patch,
   Post,
   Req,
   Res,
   UseGuards,
 } from "@nestjs/common";
 import type { Response } from "express";
-import { ProvisionError, deleteTunnel } from "@vpnhub/provisioning";
+import {
+  ProvisionError,
+  deleteTunnel,
+  changeTunnelTier,
+  provisionGreTunnel,
+  activateGreTunnel,
+  deleteGreTunnel,
+  updateGreEndpoint,
+  resolveGreEndpoint,
+} from "@vpnhub/provisioning";
 import { SessionGuard } from "../auth/session.guard";
+import { sql } from "@vpnhub/db";
 import { TunnelsService } from "./tunnels.service";
 
 interface CreateTunnelBody {
@@ -21,7 +32,10 @@ interface CreateTunnelBody {
   name: string;
   description?: string;
   gatewayHostname?: string;
-  protocol?: "wireguard" | "openvpn" | "sstp";
+  protocol?: "wireguard" | "gre";
+  // GRE-only — required when protocol === "gre". Domain (e.g. "my.dyn.com")
+  // or numeric IPv4. We resolve and cache the IP at create time.
+  remoteEndpointHost?: string;
 }
 
 @Controller("tunnels")
@@ -45,27 +59,14 @@ export class TunnelsController {
   // GET /v1/tunnels/:id/config?format=wireguard|mikrotik
   @Get(":id/config")
   async config(
-    @Req() req: { user: { userId: string } } & {
-      query: { format?: string };
-    },
+    @Req() req: { user: { userId: string } } & { query: { format?: string } },
     @Param("id") id: string,
     @Res() res: Response,
   ) {
-    const q = req.query?.format;
-    const fmt =
-      q === "mikrotik"
-        ? "mikrotik"
-        : q === "openvpn" || q === "ovpn"
-          ? "openvpn"
-          : q === "sstp"
-            ? "sstp"
-            : "wireguard";
+    const fmt = req.query?.format === "mikrotik" ? "mikrotik" : "wireguard";
     const r = await this.tunnels.getConfig(req.user.userId, id, fmt);
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${r.filename}"`,
-    );
+    res.setHeader("Content-Disposition", `attachment; filename="${r.filename}"`);
     res.setHeader("Cache-Control", "no-store");
     res.send(r.conf);
   }
@@ -85,6 +86,49 @@ export class TunnelsController {
         "ชื่อใช้ได้เฉพาะ a-z A-Z 0-9 - _ เท่านั้น (ภาษาไทยให้ใส่ในช่อง Description)",
       );
     }
+    const protocol = body.protocol ?? "wireguard";
+    if (protocol === "gre") {
+      if (!body.remoteEndpointHost) {
+        throw new BadRequestException("remoteEndpointHost required for GRE tunnels");
+      }
+      try {
+        const r = await provisionGreTunnel({
+          userId: req.user.userId,
+          speedTier: body.speedTier,
+          name: body.name,
+          description: body.description,
+          gatewayHostname: body.gatewayHostname,
+          remoteEndpointHost: body.remoteEndpointHost,
+        });
+        // Push to agent async — reply to caller immediately with the ID.
+        // On agent failure the tunnel stays status='provisioning'; drift
+        // will re-push, or the user can delete + retry.
+        void activateGreTunnel(r.tunnelId).catch((e) => {
+          console.error(`[gre-activate] tunnel=${r.tunnelId}: ${(e as Error).message}`);
+        });
+        return {
+          tunnelId: r.tunnelId,
+          status: "provisioning",
+          gateway: r.gatewayHostname,
+          privateIp: r.gatewayEndIp,
+          protocol: "gre",
+          gre: {
+            peerId: r.peerId,
+            gatewayEndIp: r.gatewayEndIp,
+            customerEndIp: r.customerEndIp,
+            pointToPointCidr: r.pointToPointCidr,
+            greKey: r.greKey,
+            remoteEndpointHost: r.remoteEndpointHost,
+            remoteEndpointIp: r.remoteEndpointIp,
+          },
+        };
+      } catch (e) {
+        if (e instanceof ProvisionError) {
+          throw new BadRequestException({ code: e.code, message: e.message });
+        }
+        throw e;
+      }
+    }
     try {
       const r = await this.tunnels.provision({
         userId: req.user.userId,
@@ -92,7 +136,7 @@ export class TunnelsController {
         name: body.name,
         description: body.description,
         gatewayHostname: body.gatewayHostname,
-        protocol: body.protocol ?? "wireguard",
+        protocol: "wireguard",
       });
       return {
         tunnelId: r.tunnelId,
@@ -108,13 +152,182 @@ export class TunnelsController {
     }
   }
 
+  // POST /v1/tunnels/:id/ping?count=N — gateway pings the peer's private IP.
+  // count = 1..10 (default 4); 1-packet pings let the portal animate live.
+  @Post(":id/ping")
+  @HttpCode(200)
+  async ping(
+    @Req() req: { user: { userId: string } } & { query: { count?: string } },
+    @Param("id") id: string,
+  ) {
+    const c = Number(req.query?.count);
+    const count = Number.isFinite(c) && c > 0 ? Math.min(Math.floor(c), 10) : undefined;
+    try {
+      return await this.tunnels.pingTunnel(req.user.userId, id, count);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  // GET /v1/tunnels/:id/traffic?from=ISO&to=ISO&bucket=5m|1h|1d
+  // Owner-only time-series aggregation for the portal chart.
+  @Get(":id/traffic")
+  async traffic(
+    @Req() req: { user: { userId: string } } & { query: { from?: string; to?: string; bucket?: string } },
+    @Param("id") id: string,
+  ) {
+    const q = req.query ?? {};
+    const from = q.from ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const to = q.to ?? new Date().toISOString();
+    const bucket = q.bucket === "1h" ? "1h" : q.bucket === "1d" ? "1d" : "5m";
+    try {
+      return await this.tunnels.getTraffic(req.user.userId, id, from, to, bucket);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  // PATCH /v1/tunnels/:id — edit mutable metadata (name, description, and
+  // for GRE tunnels the customer endpoint host). Owner-only. All three
+  // fields can be updated in one call; each is applied only when its key is
+  // present in the body.
+  @Patch(":id")
+  @HttpCode(200)
+  async patch(
+    @Req() req: { user: { userId: string } },
+    @Param("id") id: string,
+    @Body() body: {
+      name?: string;
+      description?: string | null;
+      remoteEndpointHost?: string;
+    },
+  ) {
+    try {
+      const result: Record<string, unknown> = {};
+      if (body?.name !== undefined) {
+        result.name = await this.tunnels.updateName(req.user.userId, id, body.name);
+      }
+      // Endpoint change (GRE) is a side-effecting operation — resolves DNS,
+      // pushes to the agent, writes an audit row.
+      if (body?.remoteEndpointHost !== undefined) {
+        const trimmed = String(body.remoteEndpointHost).trim();
+        if (!trimmed) throw new BadRequestException("endpoint cannot be empty");
+        try {
+          result.endpoint = await updateGreEndpoint(id, req.user.userId, trimmed);
+        } catch (e) {
+          if (e instanceof ProvisionError) {
+            throw new BadRequestException({ code: e.code, message: e.message });
+          }
+          throw e;
+        }
+      }
+      if (body?.description !== undefined) {
+        result.description = await this.tunnels.updateDescription(
+          req.user.userId, id, body.description,
+        );
+      }
+      if (Object.keys(result).length === 0) {
+        throw new BadRequestException("nothing to update");
+      }
+      return result;
+    } catch (e) {
+      if (e instanceof BadRequestException) throw e;
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  // POST /v1/tunnels/:id/resolve-endpoint — manual DNS check for a GRE tunnel.
+  // Runs the same re-resolve loop the worker's monitor runs. Owner-scoped
+  // (ownership verified in the DB WHERE inside resolveGreEndpoint via a fresh
+  // check below — we don't call resolveGreEndpoint directly because it takes
+  // no userId; do the check here).
+  @Post(":id/resolve-endpoint")
+  @HttpCode(200)
+  async resolveEndpoint(
+    @Req() req: { user: { userId: string } },
+    @Param("id") id: string,
+  ) {
+    // Cheap ownership + protocol gate — protects against a session probing
+    // arbitrary UUIDs to trigger DNS lookups server-side.
+    const [t] = await sql<{ protocol: string }[]>`
+      SELECT protocol FROM tunnels
+      WHERE id = ${id} AND user_id = ${req.user.userId} AND deleted_at IS NULL`;
+    if (!t) throw new BadRequestException("tunnel not found");
+    if (t.protocol !== "gre") {
+      throw new BadRequestException("only GRE tunnels have a DNS endpoint");
+    }
+    try {
+      return await resolveGreEndpoint(id);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  // GET /v1/tunnels/:id/endpoint-history — audit-log rows for endpoint
+  // changes on a GRE tunnel. Both `gre.endpoint_reresolved` (system, DNS
+  // moved us to a new IP) and `gre.endpoint_changed` (user edited the host)
+  // are surfaced. Owner-only.
+  @Get(":id/endpoint-history")
+  async endpointHistory(
+    @Req() req: { user: { userId: string } },
+    @Param("id") id: string,
+  ) {
+    const [t] = await sql<{ id: string }[]>`
+      SELECT id FROM tunnels
+      WHERE id = ${id} AND user_id = ${req.user.userId} AND deleted_at IS NULL`;
+    if (!t) throw new BadRequestException("tunnel not found");
+    const rows = await sql<
+      { action: string; created_at: string; metadata: unknown }[]
+    >`
+      SELECT action, created_at::text AS created_at, metadata
+      FROM audit_logs
+      WHERE resource_type = 'tunnel' AND resource_id = ${id}
+        AND action IN ('gre.endpoint_reresolved', 'gre.endpoint_changed')
+      ORDER BY created_at DESC LIMIT 50`;
+    return { events: rows };
+  }
+
+  // POST /v1/tunnels/:id/change-tier — instant upgrade/downgrade. Full-charges
+  // new tier's current catalog price, resets billing cycle to +31d, snapshots
+  // the new price for grandfathering. No refund of old cycle's remaining time.
+  @Post(":id/change-tier")
+  @HttpCode(200)
+  async changeTier(
+    @Req() req: { user: { userId: string } },
+    @Param("id") id: string,
+    @Body() body: { speedTier: "tier_100mb" | "tier_500mb" | "tier_1gb" },
+  ) {
+    try {
+      return await changeTunnelTier({
+        userId: req.user.userId,
+        tunnelId: id,
+        newTier: body?.speedTier,
+      });
+    } catch (e) {
+      if (e instanceof ProvisionError) {
+        throw new BadRequestException({ code: e.code, message: e.message });
+      }
+      throw e;
+    }
+  }
+
   // DELETE /v1/tunnels/:id — releases public IPs (no refund), removes peer.
   @Delete(":id")
   async remove(
     @Req() req: { user: { userId: string } },
     @Param("id") id: string,
   ) {
+    // Route by protocol so GRE goes through its own cleanup (agent DELETE +
+    // interface removal). Both flows honour user ownership.
+    const [t] = await sql<{ protocol: string }[]>`
+      SELECT protocol FROM tunnels
+      WHERE id = ${id} AND user_id = ${req.user.userId} AND deleted_at IS NULL`;
+    if (!t) throw new BadRequestException("tunnel not found");
     try {
+      if (t.protocol === "gre") {
+        await deleteGreTunnel(id, req.user.userId);
+        return { deleted: true, protocol: "gre" };
+      }
       return await deleteTunnel(id, req.user.userId);
     } catch (e) {
       if (e instanceof ProvisionError) {

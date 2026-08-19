@@ -9,6 +9,7 @@ import { CodesModule } from "./codes/codes.module";
 import { AdminModule } from "./admin/admin.module";
 import { BillingModule } from "./billing/billing.module";
 import { NotificationsModule } from "./notifications/notifications.module";
+import { IngestModule } from "./ingest/ingest.module";
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { NotificationsModule } from "./notifications/notifications.module";
     AdminModule,
     BillingModule,
     NotificationsModule,
+    IngestModule,
   ],
   controllers: [HealthController],
   providers: [HealthService],

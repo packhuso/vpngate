@@ -18,18 +18,30 @@ import {
   cidrsOverlap,
   isAligned,
   parseCidr,
+  getPricing,
+  savePricing,
+  getConnectionEvents,
+  getOnlineStatus,
+  adminGrantIp,
+  adminGrantBlock,
+  syncPoolPrefixListsAllGateways,
+  type SavePricingInput,
 } from "@vpnhub/provisioning";
 import { AdminGuard } from "../auth/admin.guard";
 
 const VALID_BLOCK_SIZES = [2, 4, 8, 16, 32, 64, 128, 256] as const;
 
-/** Push a blackhole add/remove for a pool CIDR to every active gateway.
+/** Push a blackhole add/remove for a pool CIDR to non-BGP gateways.
+ *  Skip BGP-enabled nodes: they announce only allocated /32s, so Mikrotik
+ *  never sends unallocated-IP traffic there (no loop, no need for blackhole).
+ *  A stale blackhole on a BGP node would create a phantom backup route that
+ *  silently drops traffic on fail-over. Matches drift.ts:163-166 design.
  *  Best-effort: failures are logged, not fatal (drift will reconcile). */
 async function pushBlackholeAllGateways(cidr: string, add: boolean) {
   const gws = await sql<
     { agent_endpoint: string; agent_ca_cert: string; agent_token: string }[]
   >`SELECT agent_endpoint, agent_ca_cert, agent_token
-    FROM vpn_gateways WHERE status = 'active'`;
+    FROM vpn_gateways WHERE status = 'active' AND bgp_enabled = false`;
   for (const gw of gws) {
     try {
       await buildGatewayClient(gw).setBlackhole(
@@ -46,6 +58,58 @@ async function pushBlackholeAllGateways(cidr: string, add: boolean) {
 @Controller("admin")
 @UseGuards(AdminGuard)
 export class AdminController {
+  // ── packages: pricing + protocol×tier allow matrix (migration 0010) ──
+  @Get("pricing")
+  async getPricing() {
+    return getPricing();
+  }
+
+  @Post("pricing")
+  async savePricing(
+    @Req() req: { user: { email: string } },
+    @Body() body: SavePricingInput,
+  ) {
+    const before = await getPricing();
+    try {
+      await savePricing(body ?? {});
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+    const after = await getPricing();
+
+    // Diff before→after so the audit entry shows exactly what the admin changed.
+    const speedChanges = after.speed.flatMap((a) => {
+      const b = before.speed.find((x) => x.tier === a.tier);
+      return b && b.priceSatang !== a.priceSatang
+        ? [{ tier: a.tier, from: b.priceSatang, to: a.priceSatang }]
+        : [];
+    });
+    const ipChanges = after.ip.flatMap((a) => {
+      const b = before.ip.find((x) => x.blockSize === a.blockSize);
+      return b && b.priceSatang !== a.priceSatang
+        ? [{ blockSize: a.blockSize, from: b.priceSatang, to: a.priceSatang }]
+        : [];
+    });
+    const allowChanges = after.allow.flatMap((a) => {
+      const b = before.allow.find((x) => x.protocol === a.protocol && x.tier === a.tier);
+      return b && b.enabled !== a.enabled
+        ? [{ protocol: a.protocol, tier: a.tier, from: b.enabled, to: a.enabled }]
+        : [];
+    });
+
+    if (speedChanges.length || ipChanges.length || allowChanges.length) {
+      const [admin] = await sql<{ id: string }[]>`
+        SELECT id FROM admin_users
+        WHERE lower(email) = lower(${req.user.email}) AND active = true`;
+      await sql`
+        INSERT INTO audit_logs (actor_type, actor_id, action, resource_type,
+          resource_id, success, metadata)
+        VALUES ('admin', ${admin?.id ?? null}, 'pricing.update', 'pricing', NULL, true,
+          ${JSON.stringify({ speed: speedChanges, ip: ipChanges, allow: allowChanges })}::jsonb)`;
+    }
+    return after;
+  }
+
   // ── overview KPIs ─────────────────────────────────────────────
   @Get("overview")
   async overview() {
@@ -100,6 +164,15 @@ export class AdminController {
     };
   }
 
+  // GET /v1/admin/tunnels/:id/connection-events — connect/disconnect/ip_change history
+  @Get("tunnels/:id/connection-events")
+  async tunnelConnectionEvents(
+    @Param("id") id: string,
+    @Query("limit") limit?: string,
+  ) {
+    return { events: await getConnectionEvents(id, Number(limit ?? 50)) };
+  }
+
   @Get("users/:id")
   async userDetail(@Param("id") id: string) {
     const [u] = await sql<
@@ -120,11 +193,32 @@ export class AdminController {
       FROM users u JOIN credit_wallets w ON w.user_id = u.id
       WHERE u.id = ${id}`;
     if (!u) throw new BadRequestException("user not found");
-    const tunnels = await sql`
-      SELECT id, name, status, speed_tier, host(private_ip) AS private_ip,
-             created_at
+    const tunnelRows = await sql<
+      { id: string; name: string; status: string; speed_tier: string; price_satang: string | null; private_ip: string; created_at: Date }[]
+    >`
+      SELECT id, name, status, speed_tier, price_satang,
+             host(private_ip) AS private_ip, created_at
       FROM tunnels WHERE user_id = ${id} AND deleted_at IS NULL
       ORDER BY created_at DESC`;
+    const onlineMap = await getOnlineStatus(tunnelRows.map((t) => t.id));
+    const tunnels = tunnelRows.map((t) => ({
+      ...t,
+      online: onlineMap[t.id]?.online ?? false,
+      last_seen_at: onlineMap[t.id]?.lastSeenAt ?? null,
+    }));
+    // Standalone single IPs (block members are billed via their block).
+    const ips = await sql`
+      SELECT host(p.ip_address) AS ip, p.status, p.price_satang,
+             t.name AS tunnel_name
+      FROM public_ips p
+      LEFT JOIN tunnels t ON t.id = p.tunnel_id
+      WHERE p.user_id = ${id} AND p.block_id IS NULL
+        AND p.status IN ('allocated', 'suspended')
+      ORDER BY p.ip_address`;
+    const blocks = await sql`
+      SELECT id, block::text AS cidr, block_size, price_satang, status
+      FROM ip_blocks WHERE user_id = ${id} AND status IN ('active', 'suspended')
+      ORDER BY block`;
     return {
       user: {
         id: u.id,
@@ -137,7 +231,127 @@ export class AdminController {
         lifetimeSpentSatang: Number(u.lifetime_spent_satang),
       },
       tunnels,
+      ips,
+      blocks,
     };
+  }
+
+  // ── per-item price override (grandfathered price for a bought item) ──
+  // Sets the LOCKED price the customer is charged next cycle. Audited.
+  private async overridePrice(
+    adminEmail: string,
+    kind: "tunnel" | "ip" | "block",
+    ref: string,
+    priceSatang: number,
+  ) {
+    if (!Number.isInteger(priceSatang) || priceSatang < 0) {
+      throw new BadRequestException("priceSatang must be a non-negative integer");
+    }
+    return sql.begin(async (tx) => {
+      const [admin] = await tx<{ id: string }[]>`
+        SELECT id FROM admin_users WHERE lower(email)=lower(${adminEmail}) AND active=true`;
+      let before: number | null = null;
+      let userId: string | null = null;
+      if (kind === "tunnel") {
+        const [r] = await tx<{ price_satang: string | null; user_id: string }[]>`
+          SELECT price_satang, user_id FROM tunnels WHERE id = ${ref} AND deleted_at IS NULL FOR UPDATE`;
+        if (!r) throw new BadRequestException("tunnel not found");
+        before = r.price_satang == null ? null : Number(r.price_satang);
+        userId = r.user_id;
+        await tx`UPDATE tunnels SET price_satang = ${priceSatang} WHERE id = ${ref}`;
+      } else if (kind === "ip") {
+        const [r] = await tx<{ price_satang: string | null; user_id: string | null; block_id: string | null }[]>`
+          SELECT price_satang, user_id, block_id FROM public_ips WHERE ip_address = ${ref}::inet FOR UPDATE`;
+        if (!r) throw new BadRequestException("ip not found");
+        if (r.block_id) throw new BadRequestException("IP belongs to a block — edit the block price instead");
+        before = r.price_satang == null ? null : Number(r.price_satang);
+        userId = r.user_id;
+        await tx`UPDATE public_ips SET price_satang = ${priceSatang} WHERE ip_address = ${ref}::inet`;
+      } else {
+        const [r] = await tx<{ price_satang: string | null; user_id: string }[]>`
+          SELECT price_satang, user_id FROM ip_blocks WHERE id = ${ref} FOR UPDATE`;
+        if (!r) throw new BadRequestException("block not found");
+        before = r.price_satang == null ? null : Number(r.price_satang);
+        userId = r.user_id;
+        await tx`UPDATE ip_blocks SET price_satang = ${priceSatang} WHERE id = ${ref}`;
+      }
+      await tx`
+        INSERT INTO audit_logs (actor_type, actor_id, action, resource_type,
+          resource_id, success, metadata)
+        VALUES ('admin', ${admin?.id ?? null}, 'pricing.item_override', ${kind}, ${ref}, true,
+          ${JSON.stringify({ userId, from: before, to: priceSatang })}::jsonb)`;
+      return { ok: true, kind, ref, priceSatang };
+    });
+  }
+
+  @Post("tunnels/:id/price")
+  @HttpCode(200)
+  async setTunnelPrice(
+    @Req() req: { user: { email: string } },
+    @Param("id") id: string,
+    @Body() body: { priceSatang: number },
+  ) {
+    return this.overridePrice(req.user.email, "tunnel", id, body?.priceSatang);
+  }
+
+  @Post("ips/:ip/price")
+  @HttpCode(200)
+  async setIpPrice(
+    @Req() req: { user: { email: string } },
+    @Param("ip") ip: string,
+    @Body() body: { priceSatang: number },
+  ) {
+    return this.overridePrice(req.user.email, "ip", ip, body?.priceSatang);
+  }
+
+  @Post("ip-blocks/:id/price")
+  @HttpCode(200)
+  async setBlockPrice(
+    @Req() req: { user: { email: string } },
+    @Param("id") id: string,
+    @Body() body: { priceSatang: number },
+  ) {
+    return this.overridePrice(req.user.email, "block", id, body?.priceSatang);
+  }
+
+  // ── admin grant: give a specific IP/block from a pool to a customer ──
+  // Free (no wallet charge); priceSatang = recurring cost (0 = free forever).
+  private async adminId(email: string): Promise<string | null> {
+    const [a] = await sql<{ id: string }[]>`
+      SELECT id FROM admin_users WHERE lower(email)=lower(${email}) AND active=true`;
+    return a?.id ?? null;
+  }
+
+  @Post("ips/grant-single")
+  @HttpCode(200)
+  async grantSingle(
+    @Req() req: { user: { email: string } },
+    @Body() body: { userId: string; ip: string; priceSatang: number },
+  ) {
+    try {
+      return await adminGrantIp({
+        userId: body?.userId, ip: body?.ip, priceSatang: body?.priceSatang,
+        adminId: await this.adminId(req.user.email),
+      });
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+  }
+
+  @Post("ips/grant-block")
+  @HttpCode(200)
+  async grantBlock(
+    @Req() req: { user: { email: string } },
+    @Body() body: { userId: string; cidr: string; priceSatang: number },
+  ) {
+    try {
+      return await adminGrantBlock({
+        userId: body?.userId, cidr: body?.cidr, priceSatang: body?.priceSatang,
+        adminId: await this.adminId(req.user.email),
+      });
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
   }
 
   // ── credit adjust (replaces SQL admin top-up) ──────────────────
@@ -292,11 +506,16 @@ export class AdminController {
     // Install a blackhole route for the whole pool so unallocated IPs don't
     // loop with the upstream router (allocated /32s override it).
     await pushBlackholeAllGateways(body.block, true);
+    // Push the updated VPN-POOLS prefix-list to every BGP gateway so this
+    // pool's CIDR can actually be advertised (without this, FRR's
+    // route-map ANNOUNCE-POOLS filters it out → IPs are silently unreachable).
+    const sync = await syncPoolPrefixListsAllGateways();
     return {
       id: result.poolId,
       block: body.block,
       size,
       planId: result.planId,
+      frrSync: { pushed: sync.pushed, failures: sync.failures },
     };
   }
 
@@ -405,7 +624,18 @@ export class AdminController {
         ${JSON.stringify({ block: pool.block, ...result })}::jsonb)`;
     // Remove the pool's blackhole route from all gateways.
     await pushBlackholeAllGateways(pool.block, false);
+    // Re-sync VPN-POOLS so the deleted pool's CIDR is no longer in the filter.
+    await syncPoolPrefixListsAllGateways();
     return { deleted: true, ...result };
+  }
+
+  // POST /v1/admin/ips/pools/sync-frr — manually re-push VPN-POOLS to every
+  // BGP-enabled gateway from current DB state. Useful after a gateway agent
+  // restart, post-migration, or to fix any drift. Idempotent.
+  @Post("ips/pools/sync-frr")
+  @HttpCode(200)
+  async syncPrefixLists() {
+    return await syncPoolPrefixListsAllGateways();
   }
 
   // GET /v1/admin/ips?pool=<id> — enumerate ALL /32s in the pool, merged
@@ -713,5 +943,127 @@ export class AdminController {
       WHERE ${action ? sql`action LIKE ${action + "%"}` : sql`true`}
       ORDER BY created_at DESC LIMIT ${lim}`;
     return { logs: rows };
+  }
+
+  // ── gateways: routing check (BGP + WG peer counts + prefix-list) ──────
+  // GET /v1/admin/gateways — list every gateway with a live routing snapshot.
+  // Offline / unreachable agents fall through with reachable=false so the row
+  // still renders (admin needs to see "gw-2 is dead" too, not just healthy ones).
+  @Get("gateways")
+  async listGateways() {
+    const gws = await sql<
+      {
+        id: string;
+        hostname: string;
+        status: string;
+        bgp_enabled: boolean;
+        wg_endpoint: string | null;
+        agent_endpoint: string;
+        agent_ca_cert: string;
+        agent_token: string;
+      }[]
+    >`SELECT id::text, hostname, status, bgp_enabled,
+             wg_endpoint, agent_endpoint, agent_ca_cert, agent_token
+       FROM vpn_gateways ORDER BY hostname`;
+
+    const now = Date.now();
+    const HANDSHAKE_ONLINE_MS = 3 * 60 * 1000; // WG rekey is 2min; 3min = comfortable margin
+
+    const rows = await Promise.all(
+      gws.map(async (gw) => {
+        const base = {
+          id: gw.id,
+          hostname: gw.hostname,
+          status: gw.status,
+          bgpEnabled: gw.bgp_enabled,
+          wgEndpoint: gw.wg_endpoint,
+        };
+        if (gw.status !== "active") {
+          return { ...base, reachable: false, error: `db status=${gw.status}` };
+        }
+        try {
+          const client = buildGatewayClient(gw);
+          const [peers, routing] = await Promise.all([
+            client.listPeers(),
+            client.getRoutingStatus(),
+          ]);
+          const online = peers.peers.filter(
+            (p) => p.lastHandshake && now - new Date(p.lastHandshake).getTime() < HANDSHAKE_ONLINE_MS,
+          ).length;
+          const bgpUp = routing.neighbors.filter((n) => n.state === "Established").length;
+          return {
+            ...base,
+            reachable: true,
+            peersTotal: peers.peers.length,
+            peersOnline: online,
+            bgpAvailable: routing.bgpAvailable,
+            bgpNeighborsUp: bgpUp,
+            bgpNeighborsTotal: routing.neighbors.length,
+            prefixCount: routing.prefixListCount,
+          };
+        } catch (e) {
+          return { ...base, reachable: false, error: (e as Error).message };
+        }
+      }),
+    );
+    return { gateways: rows };
+  }
+
+  // GET /v1/admin/gateways/:hostname/routing — full routing detail for one gateway.
+  // Hostname (not id) in the path keeps URLs human-readable in the portal.
+  @Get("gateways/:hostname/routing")
+  async gatewayRouting(@Param("hostname") hostname: string) {
+    const [gw] = await sql<
+      {
+        id: string;
+        hostname: string;
+        status: string;
+        agent_endpoint: string;
+        agent_ca_cert: string;
+        agent_token: string;
+      }[]
+    >`SELECT id::text, hostname, status, agent_endpoint, agent_ca_cert, agent_token
+       FROM vpn_gateways WHERE hostname = ${hostname}`;
+    if (!gw) throw new BadRequestException(`gateway ${hostname} not found`);
+    if (gw.status !== "active") {
+      throw new BadRequestException(`gateway ${hostname} is ${gw.status}`);
+    }
+    try {
+      const client = buildGatewayClient(gw);
+      const [peers, routing] = await Promise.all([
+        client.listPeers(),
+        client.getRoutingStatus(),
+      ]);
+      const now = Date.now();
+      const HANDSHAKE_ONLINE_MS = 3 * 60 * 1000;
+      const peerRows = peers.peers.map((p) => ({
+        publicKey: p.publicKey,
+        privateIp: p.privateIp,
+        publicIps: p.publicIps,
+        online:
+          !!p.lastHandshake &&
+          now - new Date(p.lastHandshake).getTime() < HANDSHAKE_ONLINE_MS,
+        lastHandshake: p.lastHandshake,
+        lastEndpoint: p.lastEndpoint,
+      }));
+      return {
+        hostname: gw.hostname,
+        collectedAt: routing.collectedAt,
+        bgp: {
+          available: routing.bgpAvailable,
+          localAs: routing.localAs,
+          routerId: routing.routerId,
+          neighbors: routing.neighbors,
+        },
+        prefixList: {
+          name: routing.prefixListName,
+          entries: routing.prefixEntries,
+        },
+        peers: peerRows,
+        warnings: routing.warnings ?? [],
+      };
+    } catch (e) {
+      throw new BadRequestException(`agent error: ${(e as Error).message}`);
+    }
   }
 }
